@@ -51,10 +51,19 @@ export interface ResolveSocketPathOptions {
 }
 
 /**
- * Validates one row. A machine we could not reach later - no id, label or
- * usable SSH target - is dropped here rather than downstream, the same rule
- * `normalizeAgentInfo` follows for panes. `enabled` defaults to true so a
- * future Herdr that stops emitting it does not empty the catalog.
+ * A profile id is a plain token, never a path: it names the ssh ControlMaster
+ * socket (`<stateDir>/ssh/<id>.sock`), which is handed to ssh as
+ * `-o ControlPath=…`. That socket is a live authenticated channel to the remote
+ * host, so it has to stay inside the plugin's own 0700 state dir.
+ */
+const SAFE_MACHINE_ID = /^[A-Za-z0-9._-]+$/u;
+
+/**
+ * Validates one row. A machine we could not reach later - no label, no usable
+ * SSH target, or an id we would refuse to build a path from - is dropped here
+ * rather than downstream, the same rule `normalizeAgentInfo` follows for panes.
+ * `enabled` defaults to true so a future Herdr that stops emitting it does not
+ * empty the catalog.
  */
 export function normalizeMachine(value: unknown): Machine | undefined {
   if (!isRecord(value)) return undefined;
@@ -62,6 +71,7 @@ export function normalizeMachine(value: unknown): Machine | undefined {
   const label = typeof value.label === "string" ? value.label.trim() : "";
   const target = typeof value.target === "string" ? value.target.trim() : "";
   if (!id || !label || !target) return undefined;
+  if (!SAFE_MACHINE_ID.test(id) || id === "." || id === "..") return undefined;
   try {
     assertSshTarget(target);
   } catch {

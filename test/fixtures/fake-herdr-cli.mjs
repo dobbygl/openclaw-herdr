@@ -6,6 +6,8 @@
  * Environment:
  *  FAKE_HERDR_MODE   ok (default) | badjson | notarray | fail | hang | wrapped
  *  FAKE_HERDR_CALLS  append one line per invocation, so tests can count spawns
+ *  FAKE_HERDR_MACHINES_FILE  JSON file with the rows to print instead of the
+ *                    built-in herd, for tests that need their own machines
  */
 import fs from "node:fs";
 
@@ -16,6 +18,8 @@ if (process.env.FAKE_HERDR_CALLS) {
 
 if (argv.join(" ") !== "machine list --json") {
   process.stderr.write(`error: unrecognized subcommand ${JSON.stringify(argv.join(" "))}\n`, () => process.exit(2));
+} else if (process.env.FAKE_HERDR_MACHINES_FILE) {
+  process.stdout.write(fs.readFileSync(process.env.FAKE_HERDR_MACHINES_FILE, "utf8"));
 } else {
   const machines = [
     // Everything a usable machine has, plus a field from a future Herdr.

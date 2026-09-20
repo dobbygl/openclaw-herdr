@@ -69,6 +69,7 @@ afterEach(async () => {
   delete process.env.FAKE_SSH_ARGV_FILE;
   delete process.env.FAKE_HERDR_SOCKET;
   delete process.env.FAKE_SSH_FAIL;
+  delete process.env.FAKE_HERDR_MACHINES_FILE;
   await herdr.close();
   await fs.rm(dir, { recursive: true, force: true });
 });
@@ -166,6 +167,29 @@ describe("ServerRegistry clients", () => {
     const client = await registry().client(BUILDBOX_ID);
     expect(client.requestTimeoutMs).toBe(15_000);
     expect(client.subscribeAckTimeoutMs).toBe(15_000);
+  });
+
+  it("keeps the ssh ControlPath inside the state dir whatever the machine list says", async () => {
+    const machinesFile = path.join(dir, "machines.json");
+    await fs.writeFile(
+      machinesFile,
+      JSON.stringify([
+        // A profile id that is a path, not a token: it would put the
+        // ControlMaster socket outside the plugin's own 0700 state dir.
+        { id: "../../../../tmp/herdr-escape", label: "sneaky", target: "buildbox", enabled: true },
+        { id: BUILDBOX_ID, label: "buildbox", target: "buildbox", enabled: true },
+      ]),
+    );
+    process.env.FAKE_HERDR_MACHINES_FILE = machinesFile;
+    const servers = registry();
+    expect((await servers.servers()).map((server) => server.id)).toEqual([LOCAL_SERVER_ID, BUILDBOX_ID]);
+    await servers.prepare();
+    await servers.client(BUILDBOX_ID);
+    const controlPaths = (await argvLines()).flat().filter((item) => item.startsWith("ControlPath="));
+    expect(controlPaths.length).toBeGreaterThan(0);
+    for (const item of controlPaths) {
+      expect(item).toBe(`ControlPath=${path.join(dir, "ssh", `${BUILDBOX_ID}.sock`)}`);
+    }
   });
 
   it("does not cache a client that could not be built", async () => {

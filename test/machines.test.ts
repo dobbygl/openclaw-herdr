@@ -97,6 +97,22 @@ describe("normalizeMachine", () => {
       expect(normalizeMachine(bad)).toBeUndefined();
     }
   });
+
+  it("drops a profile id that is not a plain token: it names a file and an ssh option", () => {
+    // The id becomes `<stateDir>/ssh/<id>.sock`, handed to ssh as
+    // `-o ControlPath=…`. A ControlMaster socket is a live authenticated
+    // channel to the remote host, so it must stay inside the plugin's own
+    // 0700 state dir - a row that would move it elsewhere is unusable.
+    for (const id of ["../../../../tmp/pwned", "a/b", "..", ".", "id with space", "id\nProxyCommand=id", "$(id)"]) {
+      expect(normalizeMachine({ id, label: "buildbox", target: "buildbox", enabled: true })).toBeUndefined();
+    }
+    expect(normalizeMachine({ id: "abc123def4567890", label: "buildbox", target: "buildbox" })?.id).toBe(
+      "abc123def4567890",
+    );
+    expect(normalizeMachine({ id: "9f8e-7d6c_5b.4a", label: "buildbox", target: "buildbox" })?.id).toBe(
+      "9f8e-7d6c_5b.4a",
+    );
+  });
 });
 
 describe("listMachines", () => {
