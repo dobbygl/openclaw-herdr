@@ -360,8 +360,11 @@ export class HerdrRuntime {
     }
     const resolved = resolveTarget(agents, selector);
     if (!resolved.ok) {
-      const where = server.server.isLocal ? "" : ` on ${server.server.label}`;
-      return { ok: false, message: where ? `${resolved.message.replace(/\.$/u, "")}${where}.` : resolved.message };
+      // Which herd was searched matters: `w1:p1` exists on several machines.
+      return {
+        ok: false,
+        message: server.server.isLocal ? resolved.message : `On ${server.server.label}: ${resolved.message}`,
+      };
     }
     const suffix = server.server.isLocal ? undefined : server.server.label;
     return {
@@ -388,8 +391,9 @@ export class HerdrRuntime {
     return registry.resolve(name);
   }
 
+  /** Always through the registry, so `local` has exactly one client too. */
   async #clientFor(serverId: string): Promise<HerdrClient> {
-    if (!this.#registry || serverId === LOCAL_SERVER_ID) return this.client;
+    if (!this.#registry) return this.client;
     return this.#registry.client(serverId);
   }
 

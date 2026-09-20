@@ -114,6 +114,8 @@ export class ServerRegistry {
   readonly #catalog: MachineSource | undefined;
   readonly #clients = new Map<string, ClientEntry>();
   readonly #health = new Map<string, { health: ServerHealth; at: number }>();
+  /** Servers with a background probe in flight; see `reportFailure`. */
+  readonly #probing = new Set<string>();
   #machinesById = new Map<string, Machine>();
   #catalogError: string | undefined;
 
@@ -281,12 +283,19 @@ export class ServerRegistry {
    * Called when something else noticed the server failing (a subscription that
    * died, a request that timed out). Marks it down and drops the client, so the
    * next attempt re-resolves the socket path: a Herdr that restarted elsewhere
-   * is exactly this case.
+   * is exactly this case. It then probes once, in the background, so the next
+   * `/herdr list` shows what is true rather than what failed a minute ago —
+   * one probe at a time, whatever a flapping machine does.
    */
   reportFailure(serverId: string, reason: string): void {
     if (serverId === LOCAL_SERVER_ID) return;
     this.#setHealth(serverId, { ok: false, reason: shortReason(reason) });
     this.#dropClient(serverId);
+    if (this.#probing.has(serverId)) return;
+    this.#probing.add(serverId);
+    void this.ping(serverId, { refresh: true })
+      .catch(() => undefined)
+      .finally(() => this.#probing.delete(serverId));
   }
 
   /** Why the machine list is missing, when it is. */
