@@ -1,6 +1,6 @@
-import net from "node:net";
 import os from "node:os";
 import path from "node:path";
+import { type ConnectionFactory, type DuplexLike, createUnixSocketFactory } from "./connection.js";
 import { LineDecoder, LineTooLongError, encodeRequest } from "./framing.js";
 import type {
   AgentInfo,
@@ -32,6 +32,13 @@ export class HerdrTransportError extends Error {
 
 export interface HerdrClientOptions {
   socketPath?: string;
+  /**
+   * Alternative transport. When given, connections come from this factory
+   * instead of a local Unix socket (see `createSshConnectionFactory` for the
+   * remote case) and `socketPath` is descriptive only - it is still what
+   * `client.socketPath` reports, so pass the remote path when there is one.
+   */
+  connect?: ConnectionFactory;
   /** Transport timeout for a plain request. Server-side waits get their own budget. */
   requestTimeoutMs?: number;
   /** Added on top of a server-side `timeout_ms` before the transport gives up. */
@@ -78,12 +85,16 @@ function nextId(): string {
 }
 
 /**
- * Minimal client for Herdr's Unix-socket API.
+ * Minimal client for Herdr's socket API.
  *
  * Herdr answers exactly one request per connection and then closes it, so
- * `request()` opens a fresh socket every time. `subscribe()` is the one
+ * `request()` opens a fresh connection every time. `subscribe()` is the one
  * long-lived connection: the server acknowledges and then streams events
  * until either side closes.
+ *
+ * The connection itself comes from a `ConnectionFactory`, which defaults to a
+ * local Unix socket at `socketPath`. Nothing below this line cares whether the
+ * bytes travel over a socket or over an `ssh` child's stdio.
  */
 export class HerdrClient {
   readonly socketPath: string;
@@ -91,6 +102,7 @@ export class HerdrClient {
   readonly waitGraceMs: number;
   readonly maxLineLength: number | undefined;
   readonly subscribeAckTimeoutMs: number;
+  readonly #connect: ConnectionFactory;
 
   constructor(options: HerdrClientOptions = {}) {
     this.socketPath = options.socketPath ?? defaultSocketPath();
@@ -98,13 +110,20 @@ export class HerdrClient {
     this.waitGraceMs = options.waitGraceMs ?? 2_000;
     this.maxLineLength = options.maxLineLength;
     this.subscribeAckTimeoutMs = options.subscribeAckTimeoutMs ?? 5_000;
+    this.#connect = options.connect ?? createUnixSocketFactory(this.socketPath);
   }
 
   async request<T = unknown>(method: string, params: unknown = {}, options: HerdrRequestOptions = {}): Promise<T> {
     const id = nextId();
     const timeoutMs = options.requestTimeoutMs ?? this.requestTimeoutMs;
     return new Promise<T>((resolve, reject) => {
-      const socket = net.createConnection(this.socketPath);
+      let socket: DuplexLike;
+      try {
+        socket = this.#connect();
+      } catch (cause) {
+        reject(new HerdrTransportError(`Herdr transport for ${method} could not be opened: ${causeMessage(cause)}`, { cause }));
+        return;
+      }
       const decoder = this.#decoder();
       let settled = false;
       const finish = (fn: () => void) => {
@@ -124,7 +143,6 @@ export class HerdrClient {
             )
           : undefined;
       socket.setEncoding("utf8");
-      socket.on("connect", () => socket.write(encodeRequest(id, method, params)));
       socket.on("data", (chunk: string) => {
         let lines: string[];
         try {
@@ -155,6 +173,9 @@ export class HerdrClient {
       socket.on("close", () =>
         finish(() => reject(new HerdrTransportError(`Herdr closed the connection before answering ${method}`))),
       );
+      // No `connect` event: a Unix socket buffers this write until it is
+      // connected, and an ssh child's stdin is writable from the start.
+      socket.write(encodeRequest(id, method, params));
     });
   }
 
@@ -165,7 +186,6 @@ export class HerdrClient {
     options: SubscribeOptions = {},
   ): Subscription {
     const ackTimeoutMs = options.ackTimeoutMs ?? this.subscribeAckTimeoutMs;
-    const socket = net.createConnection(this.socketPath);
     const decoder = this.#decoder();
     let acknowledged = false;
     let readySettled = false;
@@ -202,8 +222,24 @@ export class HerdrClient {
       onError?.(error);
     };
 
+    // A factory may reject the transport outright (a bad ssh target, an unsafe
+    // remote path). `subscribe()` is not promise-wrapped, so that failure is
+    // reported through the same `ready`/`closed`/`onError` contract instead of
+    // throwing at the caller.
+    let socket: DuplexLike;
+    try {
+      socket = this.#connect();
+    } catch (cause) {
+      const error = new HerdrTransportError(
+        `Herdr subscription transport could not be opened: ${causeMessage(cause)}`,
+        { cause },
+      );
+      fail(error);
+      resolveClosed();
+      return { close: () => {}, closed, ready };
+    }
+
     socket.setEncoding("utf8");
-    socket.on("connect", () => socket.write(encodeRequest(nextId(), "events.subscribe", { subscriptions })));
     socket.on("data", (chunk: string) => {
       let lines: string[];
       try {
@@ -250,6 +286,8 @@ export class HerdrClient {
       settleReady(new HerdrTransportError("Herdr closed the subscription before acknowledging it"));
       resolveClosed();
     });
+
+    socket.write(encodeRequest(nextId(), "events.subscribe", { subscriptions }));
 
     if (ackTimeoutMs > 0 && Number.isFinite(ackTimeoutMs)) {
       ackTimer = setTimeout(() => {
@@ -370,6 +408,11 @@ function interpretResponse(parsed: unknown): ResponseOutcome {
   }
   if ("result" in parsed) return { ok: true, result: parsed.result };
   return { ok: false, error: { code: "malformed_response", message: "Herdr response had neither result nor error" } };
+}
+
+export function causeMessage(cause: unknown): string {
+  if (cause instanceof Error) return cause.message;
+  return typeof cause === "string" ? cause : String(cause);
 }
 
 function framingError(method: string, cause: unknown): HerdrTransportError {
