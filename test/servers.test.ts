@@ -192,6 +192,30 @@ describe("ServerRegistry clients", () => {
     }
   });
 
+  it("refuses a label shared by two saved machines and points at their ids", async () => {
+    const machinesFile = path.join(dir, "machines-dup.json");
+    await fs.writeFile(
+      machinesFile,
+      JSON.stringify([
+        { id: BUILDBOX_ID, label: "buildbox", target: "buildbox", enabled: true },
+        { id: "eee555", label: "buildbox", target: "buildbox-2", enabled: true },
+        { id: LAB_ID, label: "lab", target: "lab", enabled: true },
+      ]),
+    );
+    process.env.FAKE_HERDR_MACHINES_FILE = machinesFile;
+    const servers = registry();
+    const outcome = await servers.resolve("buildbox");
+    expect(outcome.ok).toBe(false);
+    if (outcome.ok) return;
+    expect(outcome.message).toContain("2 saved machines");
+    expect(outcome.message).toContain(BUILDBOX_ID);
+    expect(outcome.message).toContain("eee555");
+    const byId = await servers.resolve("eee555");
+    expect(byId.ok).toBe(true);
+    const lab = await servers.resolve("lab");
+    expect(lab.ok).toBe(true);
+  });
+
   it("does not cache a client that could not be built", async () => {
     process.env.FAKE_SSH_FAIL = "auth";
     const servers = registry();

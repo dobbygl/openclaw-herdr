@@ -181,7 +181,14 @@ export class ServerRegistry {
       return { ok: true, server: { id: LOCAL_SERVER_ID, label: LOCAL_SERVER_ID, isLocal: true } };
     }
     const machines = await this.#machines();
-    const match = machines.find((machine) => machine.label === server) ?? machines.find((machine) => machine.id === server);
+    const byLabel = machines.filter((machine) => machine.label === server);
+    if (byLabel.length > 1) {
+      return {
+        ok: false,
+        message: `"${server}" names ${byLabel.length} saved machines; use a profile id instead: ${byLabel.map((machine) => machine.id).join(", ")} (see herdr machine list).`,
+      };
+    }
+    const match = byLabel[0] ?? machines.find((machine) => machine.id === server);
     if (match) return { ok: true, server: { id: match.id, label: match.label, isLocal: false } };
     const known = [LOCAL_SERVER_ID, ...machines.map((machine) => machine.label)].join(", ");
     const why = this.#catalogError

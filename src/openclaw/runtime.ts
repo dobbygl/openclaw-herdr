@@ -318,6 +318,9 @@ export class HerdrRuntime {
       if (!pane) {
         pane = await client.createTab({ label: name, ...(cwd ? { cwd } : {}), focus: false });
         created = true;
+        // The shell in a brand-new pane needs a moment to reach its prompt;
+        // Herdr refuses `agent.start` until then (`agent_pane_busy`).
+        await client.waitForIdleShell(pane.pane_id);
       }
       const agent = await client.startAgent({
         name,

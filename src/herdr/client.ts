@@ -8,6 +8,7 @@ import type {
   AgentStatus,
   HerdrError,
   PaneInfo,
+  PaneProcessInfo,
   PaneReadResult,
   PingResult,
   ReadSource,
@@ -351,9 +352,48 @@ export class HerdrClient {
     return pane as unknown as PaneInfo;
   }
 
+  /** Foreground processes of a pane, as `pane.process_info` reports them. */
+  async paneProcessInfo(paneId: string): Promise<PaneProcessInfo> {
+    const result = await this.request<unknown>("pane.process_info", { pane_id: paneId });
+    const info = isRecord(result) ? result.process_info : undefined;
+    if (!isRecord(info)) throw new HerdrTransportError(`Herdr pane.process_info returned nothing for ${paneId}`);
+    const processes = Array.isArray(info.foreground_processes) ? info.foreground_processes : [];
+    return {
+      pane_id: paneId,
+      shell_pid: typeof info.shell_pid === "number" ? info.shell_pid : null,
+      foreground_processes: processes
+        .filter((proc): proc is Record<string, unknown> => isRecord(proc) && typeof proc.pid === "number")
+        .map((proc) => ({ pid: proc.pid as number, name: typeof proc.name === "string" ? proc.name : "" })),
+    };
+  }
+
+  /**
+   * Resolves once the pane's only foreground process is its own shell, i.e.
+   * the state `agent.start` requires. A pane fresh from `tab.create` is not
+   * there yet (the shell is still starting and drawing its prompt), which
+   * Herdr reports as `agent_pane_busy`.
+   */
+  async waitForIdleShell(paneId: string, options: { timeoutMs?: number; intervalMs?: number } = {}): Promise<boolean> {
+    const deadline = Date.now() + (options.timeoutMs ?? 10_000);
+    const interval = options.intervalMs ?? 250;
+    for (;;) {
+      try {
+        const info = await this.paneProcessInfo(paneId);
+        const [only, ...rest] = info.foreground_processes;
+        if (only && rest.length === 0 && info.shell_pid !== null && only.pid === info.shell_pid) return true;
+      } catch {
+        // A transient read failure is not a verdict; keep polling until the deadline.
+      }
+      if (Date.now() >= deadline) return false;
+      await new Promise((resolve) => setTimeout(resolve, interval));
+    }
+  }
+
   /**
    * Starts a supported agent in an existing shell pane and waits until Herdr
    * sees it ready. The transport budget covers the server-side startup wait.
+   * `agent_pane_busy` right after the pane was created is retried briefly:
+   * Herdr checks the prompt, which appears a moment after the shell process.
    */
   async startAgent(options: {
     name: string;
@@ -361,19 +401,32 @@ export class HerdrClient {
     paneId: string;
     args?: string[];
     timeoutMs?: number;
+    /** Retries when Herdr answers `agent_pane_busy` (shell not at its prompt yet). */
+    busyRetries?: number;
+    busyRetryDelayMs?: number;
   }): Promise<AgentInfo> {
     const timeoutMs = options.timeoutMs ?? 60_000;
-    const result = await this.request<unknown>(
-      "agent.start",
-      {
-        name: options.name,
-        kind: options.kind,
-        pane_id: options.paneId,
-        timeout_ms: timeoutMs,
-        ...(options.args && options.args.length > 0 ? { args: options.args } : {}),
-      },
-      { requestTimeoutMs: timeoutMs + 10_000 },
-    );
+    const params = {
+      name: options.name,
+      kind: options.kind,
+      pane_id: options.paneId,
+      timeout_ms: timeoutMs,
+      ...(options.args && options.args.length > 0 ? { args: options.args } : {}),
+    };
+    const busyRetries = options.busyRetries ?? 8;
+    let result: unknown;
+    for (let attempt = 0; ; attempt += 1) {
+      try {
+        result = await this.request<unknown>("agent.start", params, { requestTimeoutMs: timeoutMs + 10_000 });
+        break;
+      } catch (error) {
+        if (error instanceof HerdrRequestError && error.code === "agent_pane_busy" && attempt < busyRetries) {
+          await new Promise((resolve) => setTimeout(resolve, options.busyRetryDelayMs ?? 500));
+          continue;
+        }
+        throw error;
+      }
+    }
     const payload = isRecord(result) && isRecord(result.agent) ? result.agent : result;
     const agent = normalizeAgentInfo(payload);
     if (!agent) throw new HerdrTransportError(`Herdr agent.start returned no usable agent for ${options.paneId}`);

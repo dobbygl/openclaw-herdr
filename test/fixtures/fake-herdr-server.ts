@@ -45,6 +45,9 @@ export interface FakeHerdr {
   readonly prompts: Array<{ target: string; text: string }>;
   readonly created: Array<{ label: string; cwd: string | undefined }>;
   readonly starts: Array<{ name: string; kind: string; paneId: string; args: string[] | undefined }>;
+  readonly processInfoCalls: string[];
+  /** Make `agent.start` answer `agent_pane_busy` this many times for a pane before accepting. */
+  busyOnStart(paneId: string, times: number): void;
   /** Adds a plain shell pane (no agent) that `pane.list` reports and `agent.start` can use. */
   addShellPane(paneId: string, label?: string): void;
   /** Pane id of every `events.subscribe` this server accepted, in order. */
@@ -116,6 +119,11 @@ export async function startFakeHerdr(prefix = "herdr-fake-", options: FakeHerdrO
   const shellPanes: Array<{ pane_id: string; workspace_id: string; tab_id: string; label: unknown; agent: null; cwd: unknown }> = [];
   const created: Array<{ label: string; cwd: string | undefined }> = [];
   const starts: Array<{ name: string; kind: string; paneId: string; args: string[] | undefined }> = [];
+  /** `pane.process_info` reports a busy shell for the first two polls of each pane. */
+  const shellReady = new Map<string, number>();
+  /** How many `agent.start` calls a pane answers with `agent_pane_busy` before accepting. */
+  const busyFirst = new Map<string, number>();
+  const processInfoCalls: string[] = [];
   const subscribes: string[] = [];
   let agents: unknown[] = [...(options.agents ?? DEFAULT_AGENTS)];
   let readText = options.readText ?? "❯ \n";
@@ -181,9 +189,37 @@ export async function startFakeHerdr(prefix = "herdr-fake-", options: FakeHerdrO
           socket.end();
           break;
         }
+        case "pane.process_info": {
+          const paneId = String(request.params.pane_id ?? "");
+          const shell = shellPanes.find((pane) => pane.pane_id === paneId);
+          processInfoCalls.push(paneId);
+          const settled = shell ? (shellReady.get(paneId) ?? 0) >= 2 : false;
+          if (shell) shellReady.set(paneId, (shellReady.get(paneId) ?? 0) + 1);
+          reply({
+            id: request.id,
+            result: {
+              type: "pane_process_info",
+              process_info: {
+                pane_id: paneId,
+                shell_pid: 4242,
+                foreground_processes: settled
+                  ? [{ pid: 4242, name: "bash" }]
+                  : [{ pid: 4242, name: "bash" }, { pid: 4243, name: "starship" }],
+              },
+            },
+          });
+          socket.end();
+          break;
+        }
         case "agent.start": {
           const paneId = String(request.params.pane_id ?? "");
           const shell = shellPanes.find((pane) => pane.pane_id === paneId);
+          if (shell && (busyFirst.get(paneId) ?? 0) > 0) {
+            busyFirst.set(paneId, (busyFirst.get(paneId) ?? 0) - 1);
+            reply({ id: "", error: { code: "agent_pane_busy", message: `agent target pane ${paneId} is not an available shell` } });
+            socket.end();
+            break;
+          }
           if (!shell) {
             reply({ id: "", error: { code: "pane_not_available", message: `${paneId} is not an available shell pane` } });
           } else if (request.params.kind === "nope") {
@@ -258,6 +294,10 @@ export async function startFakeHerdr(prefix = "herdr-fake-", options: FakeHerdrO
     prompts,
     created,
     starts,
+    processInfoCalls,
+    busyOnStart(paneId: string, times: number) {
+      busyFirst.set(paneId, times);
+    },
     addShellPane(paneId: string, label?: string) {
       shellPanes.push({ pane_id: paneId, workspace_id: "w1", tab_id: `w1:t${paneId.replace(/\D/gu, "")}`, label: label ?? null, agent: null, cwd: "/home/alice" });
     },

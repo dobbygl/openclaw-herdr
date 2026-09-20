@@ -399,6 +399,17 @@ describe("HerdrRuntime start", () => {
     expect(sent).toContain("Sent to **w1:p90**");
   });
 
+  it("waits for a brand-new pane's shell and retries a busy start", async () => {
+    const { runtime } = await runtimeOnFake();
+    fake.busyOnStart("w1:p90", 2);
+    const out = await runtime.handleCommand("start cuento", {});
+    expect(fake.created).toHaveLength(1);
+    // pane.process_info was polled until the shell was alone in the foreground
+    expect(fake.processInfoCalls.filter((p) => p === "w1:p90").length).toBeGreaterThanOrEqual(3);
+    expect(fake.starts).toEqual([{ name: "cuento", kind: "claude", paneId: "w1:p90", args: undefined }]);
+    expect(out).toContain("Started **cuento**");
+  });
+
   it("reuses an empty pane whose label matches the name", async () => {
     const { runtime } = await runtimeOnFake();
     fake.addShellPane("w1:p7", "cuento");

@@ -49,6 +49,12 @@ export interface PaneInfo {
   focused?: boolean;
 }
 
+export interface PaneProcessInfo {
+  pane_id: string;
+  shell_pid: number | null;
+  foreground_processes: Array<{ pid: number; name: string }>;
+}
+
 export interface PaneReadResult {
   pane_id: string;
   workspace_id: string;
