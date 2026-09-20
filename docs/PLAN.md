@@ -94,49 +94,56 @@ After merge (owner: maintainer):
 
 Motivation: monitor and, when explicitly allowed, drive agents in a Herdr
 running on another machine. First case: the saved machine `buildbox` (Herdr 0.9.1,
-protocol 22, a different Unix user), already linked with `herdr machine add`.
+protocol 22, remote user `alice`), already linked with `herdr machine add`.
 
 Verified facts (2026-09-20, read-only probes from this host):
 - The local socket API has no machine routing and the local snapshot does not
-  include saved machines, so `/herdr list` cannot see them through the socket.
-- Herdr's official remote automation is the CLI prefix `herdr --machine
-  <label-or-id> …`: it opens a non-interactive SSH (BatchMode, strict host
-  keys, keepalive, compression), runs a JSON bridge on the remote as the SSH
-  user and forwards `agent`, `pane`, `workspace`, `tab`, `notification`,
-  `api snapshot` and `status server`. No `events.subscribe`; `agent wait` and
-  `agent prompt --wait` are the blocking alternatives and return the full
-  `agent_info` on success, `{"error":{"code":"timeout"}}` with exit 1 on
-  timeout, exit 2 for an unknown machine.
-- `herdr --machine buildbox agent list` works from this host and lists three
-  agents of the remote user; remote rows even carry `agent_session` ids.
+  include saved machines, so `/herdr list` cannot see them through the local socket.
+- Herdr's own remote automation, `herdr --machine <label-or-id> …`, works from
+  this host but costs 6–12 s per call (SSH + remote bridge discovery) and
+  offers no `events.subscribe`; only blocking `agent wait`.
+- Raw SSH to the same host: 2.0 s cold, 1.3 s with ControlMaster. Speaking the
+  socket protocol directly over SSH stdio (`ssh buildbox socat - UNIX-CONNECT:…`,
+  or a python one-liner as fallback) answers `ping` in 0.6 s and is the exact
+  newline-delimited JSON the plugin already implements, including
+  `events.subscribe`. The remote socket is `0600` and owned by the SSH user, so
+  the saved machine must use that user (`alice@…`), which Herdr's own
+  `machine add` also requires.
 
-Decisions (supersede the socket-proxy design):
-- Remote transport = Herdr CLI forwarding, spawned per request. The Unix-socket
-  tunnel is dropped from the plan; it can return later as an optional
-  event-capable transport if latency or process count becomes a problem.
-- Servers are discovered, not configured: `local` plus every enabled profile
-  from `herdr machine list --json`. The `@server` suffix must match a profile
-  label (unique, case-sensitive, Herdr's own rule) or id. Watches store the
-  profile **id** (stable across renames) and display the label.
-- Target grammar `selector[@server]` stays as specified: `w9:p1@buildbox`,
-  `reviewer@buildbox`, `claude@buildbox`. No suffix means `local`.
-- Per-machine `allowSend` (default `false`): remote reads are on by default,
-  remote prompts and key presses are opt-in in config.
-- Remote watches: one long-lived `herdr --machine <id> agent wait <pane>
-  --until idle --until done --until blocked` child per watch, restarted with
-  backoff when SSH drops, reconciled with `agent get` before notifying; same
-  `sawWorking`/`terminal_id`/`state_change_seq` rules as local.
+Decisions:
+- Remote transport = **SSH stdio to the remote socket**: the existing
+  `HerdrClient` gets a pluggable connection factory; `local` connects to the
+  Unix socket, a remote machine spawns `ssh <target> socat - UNIX-CONNECT:<sock>`
+  (python fallback when socat is missing) per request and per subscription,
+  reusing `LineDecoder`. SSH options are fixed and private to the plugin:
+  `BatchMode=yes`, `StrictHostKeyChecking=yes`, `ServerAliveInterval=15`,
+  `ControlMaster=auto`, `ControlPersist=120`, `ControlPath` under the plugin
+  state dir (mode 0700). No tunnel service, no local socket file, no TCP.
+- Machines are discovered, not configured: `local` plus every enabled profile
+  from `herdr machine list --json` (label, id, SSH target, session). The remote
+  socket path is resolved once per machine with `ssh <target> herdr status
+  server` and cached. `@server` must match a profile label (unique,
+  case-sensitive) or id; watches store the profile id and display the label.
+- `herdr --machine` remains the human CLI and an optional fallback transport
+  (blocking `agent wait`) when SSH stdio is unavailable.
+- Target grammar `selector[@server]` stays: `w9:p1@buildbox`, `reviewer@buildbox`,
+  `claude@buildbox`. No suffix means `local`.
+- Per-machine `allowSend` (default `false`): remote reads on by default,
+  remote prompts and key presses opt-in.
+- Remote watches behave exactly like local ones (subscription + `agent.get`
+  reconciliation, `sawWorking`, `terminal_id`, `state_change_seq`); an SSH drop
+  is just a closed subscription → reconnect with backoff → reconcile.
 
 Tasks:
-- [ ] Config: `herdrBin`, `remote.enabled` (default true), `remote.allowSend: string[]` of labels/ids; keep `socketPath` for local.
-- [ ] Machine catalog: read `herdr machine list --json` (cached briefly), expose `local` + enabled machines; unknown alias error lists them.
+- [ ] Config: `herdrBin`, `sshBin`, `remote.enabled` (default true), `remote.allowSend: string[]` of labels/ids; keep `socketPath` for local.
+- [ ] Machine catalog: `herdr machine list --json` (short cache) → `local` + enabled machines; resolve and cache each remote socket path; unknown alias error lists known machines.
 - [ ] Grammar/targets: `selector@server`, split on the last `@`, server-scoped resolution with the existing precedence.
-- [ ] Transport: `HerdrCliTransport` implementing the same typed helpers as `HerdrClient` (`listAgents`, `getAgent`, `readAgent`, `prompt`, `sendKeys`, `explain`, `waitFor`) via `spawn` with argv arrays and JSON parsing; map exit codes and `error.code`.
+- [ ] Transport: connection factory in `HerdrClient`; `SshStdioConnection` spawning `ssh … socat - UNIX-CONNECT:<sock>` with argv arrays (no shell interpolation of user input), python fallback, ControlMaster options, per-request and subscription timeouts, exit-code and stderr mapping.
 - [ ] Runtime: `/herdr list` grouped by machine with copyable `w9:p1@buildbox` refs; status/read/send/watch/unwatch carry `serverId`; enforce `allowSend`.
-- [ ] Store/watcher: `serverId` in `WatchRecord` (migrate old records to `local`); remote watches use the `agent wait` child instead of a subscription; reconcile after each child exit.
-- [ ] Health: `status server` per machine on list and on watch failures; `down` shown in the list, remote watches stay pending.
-- [ ] Tests: fake `herdrBin` script producing canned JSON; unknown machine; same pane id on two machines; `allowSend` refusal; wait child exit → restart → reconcile; migration.
-- [ ] Docs: README section "Remote machines" with `herdr machine add alice@host --label buildbox` and the SSH-user/socket-permissions caveat.
+- [ ] Store/watcher: `serverId` in `WatchRecord` (migrate old records to `local`); one client per server; subscriptions keyed by server + pane.
+- [ ] Health: `ping` per machine on list and after subscription failures; `down` shown in the list, remote watches stay pending.
+- [ ] Tests: fake `ssh` script that proxies to the fake Herdr server; unknown machine; same pane id on two machines; ambiguous names across machines; `allowSend` refusal; SSH drop → reconnect → reconcile; migration.
+- [ ] Docs: README "Remote machines": `herdr machine add alice@host --label buildbox`, SSH key loaded for non-interactive use, socket ownership caveat, `remote.allowSend`, grammar.
 - [ ] Live validation from Telegram against `buildbox`: `/herdr list`, `/herdr status w9:p2@buildbox`, a watch on a remote Codex that finishes, SSH drop and recovery.
 
 ### M3 — Operator ergonomics
