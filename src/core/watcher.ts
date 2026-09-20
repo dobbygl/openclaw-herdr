@@ -1,4 +1,4 @@
-import type { HerdrClient, Subscription } from "../herdr/client.js";
+import { HerdrTransportError, type HerdrClient, type Subscription } from "../herdr/client.js";
 import type { AgentInfo, AgentStatus, SubscriptionEvent } from "../herdr/types.js";
 import { formatNotification } from "./format.js";
 import { formatTargetRef } from "./parse.js";
@@ -286,7 +286,9 @@ export class HerdrWatcher {
       },
       (error: unknown) => {
         this.logger.warn?.(`herdr watch ${this.#ref(watch)}: subscription ack failed: ${message(error)}`);
-        this.options.onServerError?.(watch.serverId, message(error));
+        // Herdr refusing the subscription (an unknown pane) says nothing about
+        // the machine's health; only a transport failure does.
+        this.#reportTransportFailure(watch.serverId, error);
       },
     );
     const live: LiveSubscription = { subscription, ready };
@@ -428,10 +430,20 @@ export class HerdrWatcher {
       info = await client.getAgent(watch.paneId);
     } catch (error) {
       this.logger.warn?.(`herdr watch ${this.#ref(watch)}: agent.get (${reason}) failed: ${message(error)}`);
-      if (watch.serverId !== LOCAL_SERVER_ID) this.options.onServerError?.(watch.serverId, message(error));
+      // A pane Herdr refuses to describe is not a machine that is down.
+      this.#reportTransportFailure(watch.serverId, error);
     }
     if (!info) {
-      if (hint) await this.#applyStatus(watch, hint, undefined, hint);
+      // The local fallback: a blip in the socket must not swallow a completion
+      // we were told about. A machine is different — an unconfirmed event is
+      // all we have and it is not enough, so the watch stays pending until the
+      // machine answers `agent.get` again (issue 5).
+      if (hint && watch.serverId === LOCAL_SERVER_ID) await this.#applyStatus(watch, hint, undefined, hint);
+      else if (hint) {
+        this.logger.info?.(
+          `herdr watch ${this.#ref(watch)}: ${hint} seen but ${this.#serverName(watch.serverId)} could not confirm it; staying pending`,
+        );
+      }
       return;
     }
     // Occupant change: this pane runs a different terminal now, so whatever it
@@ -635,6 +647,18 @@ export class HerdrWatcher {
   /** How a server is named in a sentence. */
   #serverName(serverId: string): string {
     return this.#serverSuffix(serverId) ?? "the local Herdr";
+  }
+
+  /**
+   * Health signal, filtered: only a transport failure says something about the
+   * server. `HerdrRequestError` means Herdr answered and refused, which is a
+   * pane problem, and marking the machine down for it would push every other
+   * watch on it into backoff.
+   */
+  #reportTransportFailure(serverId: string, error: unknown): void {
+    if (serverId === LOCAL_SERVER_ID) return;
+    if (!(error instanceof HerdrTransportError)) return;
+    this.options.onServerError?.(serverId, message(error));
   }
 
   /** Only Herdr's five documented states are accepted; anything else is `unknown` (finding 8). */

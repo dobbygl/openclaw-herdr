@@ -185,7 +185,7 @@ export class HerdrRuntime {
    * agent there is not.
    */
   async send(target: string | undefined, text: string, caller: Caller, watch = true): Promise<string> {
-    const located = await this.#locate(target);
+    const located = await this.#locate(target, { onAmbiguous: "line" });
     if (!located.ok) return located.message;
     const { agent, client, server, ref } = located.target;
     const refusal = this.#refuseSend(server, ref);
@@ -252,14 +252,18 @@ export class HerdrRuntime {
     const located = await this.#locate(target);
     if (!located.ok) return located.message;
     const { agent, server, ref } = located.target;
-    await this.#watcher.watch({
-      agent,
-      serverId: server.id,
-      sessionKey: caller.sessionKey,
-      ...(caller.agentId ? { agentId: caller.agentId } : {}),
-      promptPreview: agent.terminal_title_stripped ?? "(current task)",
-      timeoutMinutes: this.config.watchTimeoutMinutes,
-    });
+    try {
+      await this.#watcher.watch({
+        agent,
+        serverId: server.id,
+        sessionKey: caller.sessionKey,
+        ...(caller.agentId ? { agentId: caller.agentId } : {}),
+        promptPreview: agent.terminal_title_stripped ?? "(current task)",
+        timeoutMinutes: this.config.watchTimeoutMinutes,
+      });
+    } catch (error) {
+      return `I am not watching ${ref}: ${shortMessage(error)}. Try again once it answers.`;
+    }
     return `Watching ${ref} (${agent.agent_status}). I will tell you when it finishes or blocks.`;
   }
 
@@ -331,7 +335,10 @@ export class HerdrRuntime {
    * runs several (or none) the answer is the full grouped list, which is what
    * the operator needs in order to name one.
    */
-  async #locate(target: string | undefined): Promise<LocateOutcome> {
+  async #locate(
+    target: string | undefined,
+    options: { onAmbiguous?: "list" | "line" } = {},
+  ): Promise<LocateOutcome> {
     let selector: string | undefined;
     let serverName: string | undefined;
     if (target !== undefined) {
@@ -355,7 +362,13 @@ export class HerdrRuntime {
     const agents = await client.listAgents();
     if (selector === undefined) {
       const live = agents.filter((agent) => agent.agent !== null);
-      if (live.length !== 1) return { ok: false, message: await this.list() };
+      if (live.length !== 1) {
+        // `status` shows the whole herd (that is the question it answers); a
+        // prompt gets one short line naming the candidates, not a wall of text.
+        const ambiguity = resolveTarget(agents, undefined);
+        if (options.onAmbiguous === "line" && !ambiguity.ok) return { ok: false, message: ambiguity.message };
+        return { ok: false, message: await this.list() };
+      }
       selector = (live[0] as AgentInfo).pane_id;
     }
     const resolved = resolveTarget(agents, selector);
@@ -409,7 +422,9 @@ export class HerdrRuntime {
       return { ...base, agents: await client.listAgents() };
     } catch (error) {
       const reason = shortMessage(error);
-      if (!server.isLocal) registry.reportFailure(server.id, reason);
+      // Only a transport failure is a health verdict: Herdr answering and
+      // refusing must not put the machine's other watches into backoff.
+      if (!server.isLocal && error instanceof HerdrTransportError) registry.reportFailure(server.id, reason);
       return { ...base, down: reason };
     }
   }

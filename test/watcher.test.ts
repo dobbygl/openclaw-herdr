@@ -2,7 +2,7 @@ import os from "node:os";
 import path from "node:path";
 import fs from "node:fs/promises";
 import { afterEach, beforeEach, describe, expect, it } from "vitest";
-import type { Subscription } from "../src/herdr/client.js";
+import { HerdrRequestError, HerdrTransportError, type Subscription } from "../src/herdr/client.js";
 import type { AgentInfo, PaneReadResult, SubscriptionEvent, SubscriptionSpec } from "../src/herdr/types.js";
 import { WatchStore, type WatchRecord } from "../src/core/watch-store.js";
 import { LOCAL_SERVER_ID } from "../src/core/servers.js";
@@ -686,6 +686,28 @@ describe("HerdrWatcher servers", () => {
     expect(notifier.statuses()).toEqual(["idle"]);
     expect(notifier.calls[0]?.text).toContain("**w1:p1@buildbox**");
     expect(store.list()).toHaveLength(0);
+  });
+
+  it("does not blame the machine when Herdr refuses to describe a pane", async () => {
+    await startWatch({ serverId: BUILDBOX, agent: remoteAgent });
+    remote.getAgentError = new HerdrRequestError({ code: "not_found", message: "no agent on w1:p1" });
+    remote.emit("w1:p1", "idle");
+    await settle();
+    // Herdr answered and said no: a pane problem, not a machine that is down.
+    expect(serverErrors).toEqual([]);
+    // And an event nobody could confirm never settles a remote watch.
+    expect(notifier.calls).toHaveLength(0);
+    expect(store.list()).toHaveLength(1);
+  });
+
+  it("marks the machine down when the transport fails, and keeps the watch", async () => {
+    await startWatch({ serverId: BUILDBOX, agent: remoteAgent });
+    remote.getAgentError = new HerdrTransportError("ssh to buildbox: the ssh connection dropped");
+    remote.emit("w1:p1", "idle");
+    await settle();
+    expect(serverErrors.map((e) => e.serverId)).toEqual([BUILDBOX]);
+    expect(notifier.calls).toHaveLength(0);
+    expect(store.list()).toHaveLength(1);
   });
 
   it("refuses to register a watch on a machine it cannot reach", async () => {

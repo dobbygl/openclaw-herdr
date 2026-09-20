@@ -228,15 +228,15 @@ describe("HerdrRuntime with machines", () => {
   let herdr: FakeHerdr;
   let dir: string;
 
-  function localClient() {
+  function localClient(here: AgentInfo[] = localAgents) {
     return fakeClient({
-      listAgents: async () => localAgents,
-      getAgent: async () => localAgents[0],
+      listAgents: async () => here,
+      getAgent: async (target: string) => here.find((a) => a.pane_id === target),
     });
   }
 
-  async function withMachines(options: { allowSend?: string[] } = {}) {
-    const client = localClient();
+  async function withMachines(options: { allowSend?: string[]; localAgents?: AgentInfo[] } = {}) {
+    const client = localClient(options.localAgents);
     const registry = new ServerRegistry({
       herdrBin: FAKE_HERDR,
       sshBin: FAKE_SSH,
@@ -346,6 +346,20 @@ describe("HerdrRuntime with machines", () => {
     await waitFor(() => notified.length > 0);
     expect(notified[0]?.status).toBe("done");
     expect(notified[0]?.text).toContain("**w1:p1@buildbox**");
+  });
+
+  it("answers a bare prompt with one line, not the whole herd", async () => {
+    const two = [...localAgents, { ...(localAgents[0] as AgentInfo), pane_id: "w1:p9", terminal_id: "term_other" }];
+    const { runtime, client } = await withMachines({ localAgents: two });
+    const out = await runtime.handleCommand("run the tests", { sessionKey: "s1" });
+    expect(out).toContain("Several agents are running");
+    expect(out).toContain("w1:p9");
+    // No machine groups, no pings: a prompt does not ask for an inventory.
+    expect(out).not.toContain("Machine buildbox:");
+    expect(out.split("\n")).toHaveLength(1);
+    expect(client.prompts).toEqual([]);
+    // `status` still answers with the full, grouped list.
+    expect(await runtime.handleCommand("status", {})).toContain("Machine buildbox:");
   });
 
   it("watches and unwatches a remote pane, scoped to its machine", async () => {
