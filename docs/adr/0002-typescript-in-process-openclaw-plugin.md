@@ -9,7 +9,7 @@ bridged to OpenClaw; a Bun service like Collie.
 
 ## Decision
 
-TypeScript on Node 22+, registered through `openclaw/plugin-sdk` and running
+TypeScript on Node 24.16+, registered through `openclaw/plugin-sdk` and running
 inside the Gateway process.
 
 ## Rationale

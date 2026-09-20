@@ -82,7 +82,7 @@ fields are ignorable. Building on that removes all three failure classes.
 
 ## Working agreements
 
-- Language: TypeScript on Node 22+, no runtime dependencies beyond `typebox`.
+- Language: TypeScript on Node 24.16+ (OpenClaw's floor), no runtime dependencies beyond `typebox`.
 - Tests: `npm test` (vitest) must pass before every commit; `npm run smoke` before every install on the host.
 - Commits: Conventional Commits, English, subject line only.
 - Never parse terminal screens in this repo. If Herdr does not expose it, propose it upstream (github.com/herdrdev/herdr).

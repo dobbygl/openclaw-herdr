@@ -5,7 +5,7 @@
   *Drive the coding agents in your Herdr panes from OpenClaw chat*
 
   [![CI](https://img.shields.io/github/actions/workflow/status/dobbygl/openclaw-herdr/ci.yml?style=flat-square)](https://github.com/dobbygl/openclaw-herdr/actions)
-  [![Node.js](https://img.shields.io/badge/Node.js->=22-3c873a?style=flat-square)](https://nodejs.org)
+  [![Node.js](https://img.shields.io/badge/Node.js->=24.16-3c873a?style=flat-square)](https://nodejs.org)
   [![OpenClaw plugin](https://img.shields.io/badge/OpenClaw-plugin-orange?style=flat-square)](https://docs.openclaw.ai/cli/plugins)
   [![License](https://img.shields.io/badge/License-MIT-blue?style=flat-square)](LICENSE)
 
@@ -33,7 +33,7 @@ It replaces screen scraping with Herdr's own agent lifecycle API, so it does not
 
 ## Installation
 
-Requirements: OpenClaw `2026.9.2+`, Herdr `0.9.x` running locally (`herdr status server`), Node.js `22+`, and a coding agent started inside a Herdr pane.
+Requirements: OpenClaw `2026.9.2+`, Herdr `0.9.x` running locally (`herdr status server`), Node.js `24.16+` (required by OpenClaw itself), and a coding agent started inside a Herdr pane.
 
 ```bash
 git clone https://github.com/dobbygl/openclaw-herdr.git
