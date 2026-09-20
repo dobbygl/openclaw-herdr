@@ -1,8 +1,23 @@
 import { HerdrClient, HerdrRequestError, HerdrTransportError } from "../herdr/client.js";
 import type { AgentInfo } from "../herdr/types.js";
 import { compactPaneText } from "../core/compact.js";
-import { formatAgentList, formatSendAccepted, formatStatus, preview } from "../core/format.js";
-import { HELP_TEXT, parseHerdrCommand, type HerdrCommand } from "../core/parse.js";
+import {
+  formatAgentList,
+  formatSendAccepted,
+  formatServerList,
+  formatStatus,
+  preview,
+  type ServerGroup,
+} from "../core/format.js";
+import {
+  formatTargetRef,
+  HELP_TEXT,
+  parseHerdrCommand,
+  parseTargetRef,
+  TargetSyntaxError,
+  type HerdrCommand,
+} from "../core/parse.js";
+import { LOCAL_SERVER_ID, ServerRegistry, shortReason, type ServerDescription } from "../core/servers.js";
 import { resolveTarget } from "../core/targets.js";
 import { WatchStore, type WatchRecord } from "../core/watch-store.js";
 import { HerdrWatcher, type Notifier } from "../core/watcher.js";
@@ -14,12 +29,29 @@ export interface Caller {
   agentId?: string;
 }
 
+/** A target that was resolved down to one live agent on one server. */
+interface LocatedTarget {
+  server: ServerDescription;
+  client: HerdrClient;
+  agent: AgentInfo;
+  /** What the operator can copy back: `w1:p1`, or `w1:p1@buildbox`. */
+  ref: string;
+}
+
+type LocateOutcome = { ok: true; target: LocatedTarget } | { ok: false; message: string };
+
 /**
  * One object that both the slash command and the agent tools call into.
- * It owns the Herdr client, the durable watch list and the event watcher.
+ * It owns the server registry (local plus every Herdr machine), the durable
+ * watch list and the event watcher.
+ *
+ * Every command takes a `selector[@server]` target: the selector is resolved
+ * against *that server's* agent list, so `w1:p1` and `w1:p1@buildbox` are two
+ * different panes and neither can be confused for the other.
  */
 export class HerdrRuntime {
   readonly client: HerdrClient;
+  #registry: ServerRegistry | undefined;
   #store: WatchStore | undefined;
   #watcher: HerdrWatcher | undefined;
   #logger: HostLogger;
@@ -29,6 +61,8 @@ export class HerdrRuntime {
     private readonly notifier: Notifier,
     logger: HostLogger,
     client?: HerdrClient,
+    /** Pre-built registry; the service builds one at `start()` when omitted. */
+    registry?: ServerRegistry,
   ) {
     this.#logger = logger;
     this.client =
@@ -37,18 +71,49 @@ export class HerdrRuntime {
         ...(config.socketPath ? { socketPath: config.socketPath } : {}),
         requestTimeoutMs: config.requestTimeoutMs,
       });
+    this.#registry = registry;
   }
 
+  /**
+   * The registry is built here, not in the constructor: it needs `stateDir`
+   * for the ssh ControlMaster sockets, which only the service knows.
+   */
   async start(stateDir: string, logger?: HostLogger): Promise<void> {
     if (logger) this.#logger = logger;
+    const registry =
+      this.#registry ??
+      new ServerRegistry({
+        ...(this.config.socketPath ? { socketPath: this.config.socketPath } : {}),
+        requestTimeoutMs: this.config.requestTimeoutMs,
+        remoteEnabled: this.config.remote.enabled,
+        allowSend: this.config.remote.allowSend,
+        ...(this.config.herdrBin ? { herdrBin: this.config.herdrBin } : {}),
+        ...(this.config.sshBin ? { sshBin: this.config.sshBin } : {}),
+        stateDir,
+        localClient: this.client,
+        logger: this.#logger,
+      });
+    this.#registry = registry;
+    await registry.prepare();
+
     const store = new WatchStore(stateDir, this.#logger);
     await store.load();
     this.#store = store;
-    this.#watcher = new HerdrWatcher(this.client, store, this.notifier, this.#logger, {
-      readLines: this.config.readLines,
-    });
+    this.#watcher = new HerdrWatcher(
+      (serverId) => registry.clientFor(serverId),
+      store,
+      this.notifier,
+      this.#logger,
+      {
+        readLines: this.config.readLines,
+        serverLabel: (serverId) => registry.describe(serverId).label,
+        onServerError: (serverId, reason) => registry.reportFailure(serverId, reason),
+      },
+    );
     await this.#watcher.start();
-    this.#logger.info?.(`herdr: watching ${store.list().length} pane(s); socket ${this.client.socketPath}`);
+    this.#logger.info?.(
+      `herdr: watching ${store.list().length} pane(s); socket ${this.client.socketPath}; remote machines ${registry.remoteEnabled ? "enabled" : "disabled"}`,
+    );
   }
 
   async stop(): Promise<void> {
@@ -65,34 +130,43 @@ export class HerdrRuntime {
     }
   }
 
+  /**
+   * `/herdr list`: this host first, then one group per machine. Each machine is
+   * pinged first (issue 5), so a sleeping box costs one short probe and shows
+   * up as `down` with its reason instead of stalling the whole list.
+   */
   async list(): Promise<string> {
-    const agents = await this.client.listAgents();
-    return formatAgentList(agents, this.#store?.list() ?? []);
+    const registry = this.#registry;
+    const watches = this.#store?.list() ?? [];
+    if (!registry) return formatAgentList(await this.client.listAgents(), watches);
+    const servers = await registry.servers();
+    const groups = await Promise.all(servers.map((server) => this.#groupFor(registry, server)));
+    const catalogError = registry.catalogError();
+    return formatServerList(
+      groups,
+      watches,
+      catalogError ? `Machine list unavailable: ${catalogError}` : undefined,
+    );
   }
 
-  async status(selector: string | undefined): Promise<string> {
-    const agents = await this.client.listAgents();
-    if (!selector) {
-      const live = agents.filter((agent) => agent.agent !== null);
-      if (live.length !== 1) return formatAgentList(agents, this.#store?.list() ?? []);
-      selector = (live[0] as AgentInfo).pane_id;
-    }
-    const target = resolveTarget(agents, selector);
-    if (!target.ok) return target.message;
-    const tail = await this.#safeRead(target.agent.pane_id, 12);
-    return formatStatus(target.agent, tail, this.#store?.byPane(target.agent.pane_id));
+  async status(target: string | undefined): Promise<string> {
+    const located = await this.#locate(target);
+    if (!located.ok) return located.message;
+    const { agent, client, server, ref } = located.target;
+    const tail = await this.#safeRead(client, agent.pane_id, 12);
+    return formatStatus(agent, tail, this.#store?.byPane({ serverId: server.id, paneId: agent.pane_id }), ref);
   }
 
-  async read(selector: string, lines: number | undefined): Promise<string> {
-    const agents = await this.client.listAgents();
-    const target = resolveTarget(agents, selector);
-    if (!target.ok) return target.message;
-    const read = await this.client.readAgent(target.agent.pane_id, {
+  async read(target: string, lines: number | undefined): Promise<string> {
+    const located = await this.#locate(target);
+    if (!located.ok) return located.message;
+    const { agent, client, ref } = located.target;
+    const read = await client.readAgent(agent.pane_id, {
       source: "recent",
       lines: lines ?? this.config.readLines,
     });
     const compact = compactPaneText(read.text, { maxLines: lines ?? this.config.readLines });
-    return compact ? "```\n" + compact + "\n```" : `${target.agent.pane_id} shows nothing yet.`;
+    return compact ? "```\n" + compact + "\n```" : `${ref} shows nothing yet.`;
   }
 
   /**
@@ -105,16 +179,21 @@ export class HerdrRuntime {
    *  - not sent      — target refused, agent blocked, or Herdr refused the call.
    *  - sent          — with or without a working watch.
    *  - uncertain     — the transport died mid-prompt; it may have been delivered.
+   *
+   * A remote pane is read-only unless its machine is listed in
+   * `remote.allowSend`: reading someone else's box is cheap, typing into an
+   * agent there is not.
    */
-  async send(selector: string | undefined, text: string, caller: Caller, watch = true): Promise<string> {
-    const agents = await this.client.listAgents();
-    const target = resolveTarget(agents, selector);
-    if (!target.ok) return target.message;
-    const agent = target.agent;
+  async send(target: string | undefined, text: string, caller: Caller, watch = true): Promise<string> {
+    const located = await this.#locate(target, { onAmbiguous: "line" });
+    if (!located.ok) return located.message;
+    const { agent, client, server, ref } = located.target;
+    const refusal = this.#refuseSend(server, ref);
+    if (refusal) return refusal;
     if (agent.agent_status === "blocked") {
-      const tail = await this.#safeRead(agent.pane_id, 20);
+      const tail = await this.#safeRead(client, agent.pane_id, 20);
       return [
-        `${agent.pane_id} is waiting for input, so I did not send anything.`,
+        `${ref} is waiting for input, so I did not send anything.`,
         "Read the prompt below and answer it in the terminal (Herdr or Collie); answering from chat is not implemented yet.",
         tail ? "```\n" + compactPaneText(tail, { maxLines: 20 }) + "\n```" : "",
       ].join("\n");
@@ -130,6 +209,7 @@ export class HerdrRuntime {
           // The observed state, never an invented "working": what the agent is
           // doing is Herdr's to say, and `seqAtStart` is captured from it.
           agent,
+          serverId: server.id,
           sessionKey,
           ...(caller.agentId ? { agentId: caller.agentId } : {}),
           promptPreview: preview(text),
@@ -137,18 +217,18 @@ export class HerdrRuntime {
         });
       } catch (error) {
         trackingFailed = true;
-        this.#logger.error?.(`herdr: could not start the watch for ${agent.pane_id}: ${describeError(error)}`);
+        this.#logger.error?.(`herdr: could not start the watch for ${ref}: ${describeError(error)}`);
       }
     }
 
     try {
-      await this.client.prompt(agent.pane_id, text);
+      await client.prompt(agent.pane_id, text);
     } catch (error) {
       if (error instanceof HerdrTransportError) {
         // We do not know whether Herdr got it. Keep the watch: if the prompt
         // did land, the subscription still reports the completion.
         return [
-          `I could not confirm the send to **${agent.pane_id}**: ${error.message}.`,
+          `I could not confirm the send to **${ref}**: ${error.message}.`,
           record
             ? "The prompt may have been delivered; I am still watching, so check /herdr status before resending."
             : "The prompt may have been delivered; check /herdr status before resending.",
@@ -156,7 +236,7 @@ export class HerdrRuntime {
         ].join("\n");
       }
       if (record) await watcher?.cancel(record.id);
-      return `Nothing was sent to ${agent.pane_id}. ${describeFailure(error)}`;
+      return `Nothing was sent to ${ref}. ${describeFailure(error)}`;
     }
 
     if (record && watcher) {
@@ -164,47 +244,65 @@ export class HerdrRuntime {
       // and the pane may even have changed hands. `reconcile` never throws.
       await watcher.reconcile(record.id, "post-prompt");
     }
-    return formatSendAccepted(agent, text, record ? "watching" : trackingFailed ? "tracking_failed" : "off");
+    return formatSendAccepted(agent, text, record ? "watching" : trackingFailed ? "tracking_failed" : "off", ref);
   }
 
-  async watch(selector: string, caller: Caller): Promise<string> {
+  async watch(target: string, caller: Caller): Promise<string> {
     if (!caller.sessionKey || !this.#watcher) return "Watching needs an OpenClaw session to report back to.";
-    const agents = await this.client.listAgents();
-    const target = resolveTarget(agents, selector);
-    if (!target.ok) return target.message;
-    await this.#watcher.watch({
-      agent: target.agent,
-      sessionKey: caller.sessionKey,
-      ...(caller.agentId ? { agentId: caller.agentId } : {}),
-      promptPreview: target.agent.terminal_title_stripped ?? "(current task)",
-      timeoutMinutes: this.config.watchTimeoutMinutes,
-    });
-    return `Watching ${target.agent.pane_id} (${target.agent.agent_status}). I will tell you when it finishes or blocks.`;
+    const located = await this.#locate(target);
+    if (!located.ok) return located.message;
+    const { agent, server, ref } = located.target;
+    try {
+      await this.#watcher.watch({
+        agent,
+        serverId: server.id,
+        sessionKey: caller.sessionKey,
+        ...(caller.agentId ? { agentId: caller.agentId } : {}),
+        promptPreview: agent.terminal_title_stripped ?? "(current task)",
+        timeoutMinutes: this.config.watchTimeoutMinutes,
+      });
+    } catch (error) {
+      return `I am not watching ${ref}: ${shortMessage(error)}. Try again once it answers.`;
+    }
+    return `Watching ${ref} (${agent.agent_status}). I will tell you when it finishes or blocks.`;
   }
 
   /**
-   * Stops watching. Policy (finding 10): watches are keyed by (pane, session),
-   * so several chats may watch the same pane and `unwatch` only removes the
-   * caller's own watch — one chat can never silence another. Without a session
-   * (a surface that cannot be notified anyway) it clears the pane entirely.
+   * Stops watching. Policy (finding 10): watches are keyed by (server, pane,
+   * session), so several chats may watch the same pane and `unwatch` only
+   * removes the caller's own watch — one chat can never silence another.
+   * Without a session (a surface that cannot be notified anyway) it clears the
+   * pane entirely. A `@server` suffix scopes it to that machine.
    */
-  async unwatch(selector: string, caller: Caller): Promise<string> {
+  async unwatch(target: string, caller: Caller): Promise<string> {
     const watcher = this.#watcher;
     if (!watcher) return "Watcher is not running.";
-    const agents = await this.client.listAgents().catch(() => [] as AgentInfo[]);
-    const target = resolveTarget(agents, selector);
-    const paneId = target.ok ? target.agent.pane_id : selector;
-    if (!caller.sessionKey) {
-      const removed = await watcher.unwatch(paneId);
-      return removed > 0
-        ? `Stopped watching ${paneId} (${removed} watch${removed === 1 ? "" : "es"}).`
-        : `${paneId} was not being watched.`;
+    let parsed: { selector: string; server?: string };
+    try {
+      parsed = parseTargetRef(target);
+    } catch (error) {
+      if (error instanceof TargetSyntaxError) return error.message;
+      throw error;
     }
-    if ((await watcher.unwatch(paneId, caller.sessionKey)) > 0) return `Stopped watching ${paneId}.`;
-    const others = this.#store?.listByPane(paneId).length ?? 0;
-    return others > 0
-      ? `${paneId} is watched by another chat, not by this one.`
-      : `${paneId} was not being watched.`;
+    const server = await this.#resolveServer(parsed.server);
+    if (!server.ok) return server.message;
+    // The pane may be gone (that is often why the operator unwatches), so a
+    // failed lookup falls back to the selector as a literal pane id.
+    const agents = await this.#listAgentsQuietly(server.server.id);
+    const resolved = resolveTarget(agents, parsed.selector);
+    const paneId = resolved.ok ? resolved.agent.pane_id : parsed.selector;
+    const suffix = server.server.isLocal ? undefined : server.server.label;
+    const ref = formatTargetRef(paneId, suffix);
+    const paneRef = { serverId: server.server.id, paneId };
+    if (!caller.sessionKey) {
+      const removed = await watcher.unwatch(paneRef);
+      return removed > 0
+        ? `Stopped watching ${ref} (${removed} watch${removed === 1 ? "" : "es"}).`
+        : `${ref} was not being watched.`;
+    }
+    if ((await watcher.unwatch(paneRef, caller.sessionKey)) > 0) return `Stopped watching ${ref}.`;
+    const others = this.#store?.listByPane(paneRef).length ?? 0;
+    return others > 0 ? `${ref} is watched by another chat, not by this one.` : `${ref} was not being watched.`;
   }
 
   async #run(command: HerdrCommand, caller: Caller): Promise<string> {
@@ -228,9 +326,144 @@ export class HerdrRuntime {
     }
   }
 
-  async #safeRead(paneId: string, lines: number): Promise<string | undefined> {
+  // ---- internals ----
+
+  /**
+   * `selector[@server]` → one live agent on one server.
+   *
+   * Without a target it means "the only agent on this host"; when this host
+   * runs several (or none) the answer is the full grouped list, which is what
+   * the operator needs in order to name one.
+   */
+  async #locate(
+    target: string | undefined,
+    options: { onAmbiguous?: "list" | "line" } = {},
+  ): Promise<LocateOutcome> {
+    let selector: string | undefined;
+    let serverName: string | undefined;
+    if (target !== undefined) {
+      try {
+        const parsed = parseTargetRef(target);
+        selector = parsed.selector;
+        serverName = parsed.server;
+      } catch (error) {
+        if (error instanceof TargetSyntaxError) return { ok: false, message: error.message };
+        throw error;
+      }
+    }
+    const server = await this.#resolveServer(serverName);
+    if (!server.ok) return { ok: false, message: server.message };
+    let client: HerdrClient;
     try {
-      return (await this.client.readAgent(paneId, { source: "recent", lines })).text;
+      client = await this.#clientFor(server.server.id);
+    } catch (error) {
+      return { ok: false, message: this.#unreachable(server.server, error) };
+    }
+    let agents: AgentInfo[];
+    try {
+      agents = await client.listAgents();
+    } catch (error) {
+      // Name the server that failed: "cannot reach Herdr" is wrong when the
+      // Herdr that went quiet is on another machine.
+      return { ok: false, message: this.#unreachable(server.server, error) };
+    }
+    if (selector === undefined) {
+      const live = agents.filter((agent) => agent.agent !== null);
+      if (live.length !== 1) {
+        // `status` shows the whole herd (that is the question it answers); a
+        // prompt gets one short line naming the candidates, not a wall of text.
+        const ambiguity = resolveTarget(agents, undefined);
+        if (options.onAmbiguous === "line" && !ambiguity.ok) return { ok: false, message: ambiguity.message };
+        return { ok: false, message: await this.list() };
+      }
+      selector = (live[0] as AgentInfo).pane_id;
+    }
+    const resolved = resolveTarget(agents, selector);
+    if (!resolved.ok) {
+      // Which herd was searched matters: `w1:p1` exists on several machines.
+      return {
+        ok: false,
+        message: server.server.isLocal ? resolved.message : `On ${server.server.label}: ${resolved.message}`,
+      };
+    }
+    const suffix = server.server.isLocal ? undefined : server.server.label;
+    return {
+      ok: true,
+      target: {
+        server: server.server,
+        client,
+        agent: resolved.agent,
+        ref: formatTargetRef(resolved.agent.pane_id, suffix),
+      },
+    };
+  }
+
+  async #resolveServer(
+    name: string | undefined,
+  ): Promise<{ ok: true; server: ServerDescription } | { ok: false; message: string }> {
+    const registry = this.#registry;
+    if (!registry) {
+      if (name === undefined || name === LOCAL_SERVER_ID) {
+        return { ok: true, server: { id: LOCAL_SERVER_ID, label: LOCAL_SERVER_ID, isLocal: true } };
+      }
+      return { ok: false, message: `I know no Herdr server called "${name}". Known: ${LOCAL_SERVER_ID}.` };
+    }
+    return registry.resolve(name);
+  }
+
+  /** Always through the registry, so `local` has exactly one client too. */
+  async #clientFor(serverId: string): Promise<HerdrClient> {
+    if (!this.#registry) return this.client;
+    return this.#registry.client(serverId);
+  }
+
+  /** One `/herdr list` group: ping the machine, then ask it for its agents. */
+  async #groupFor(registry: ServerRegistry, server: ServerDescription): Promise<ServerGroup> {
+    const base = { id: server.id, label: server.label, isLocal: server.isLocal };
+    if (!server.isLocal) {
+      const health = await registry.ping(server.id);
+      if (!health.ok) return { ...base, down: health.reason ?? "no answer" };
+    }
+    try {
+      const client = await this.#clientFor(server.id);
+      return { ...base, agents: await client.listAgents() };
+    } catch (error) {
+      const reason = shortMessage(error);
+      // Only a transport failure is a health verdict: Herdr answering and
+      // refusing must not put the machine's other watches into backoff.
+      if (!server.isLocal && error instanceof HerdrTransportError) registry.reportFailure(server.id, reason);
+      return { ...base, down: reason };
+    }
+  }
+
+  /** `agent.list` for a server, or an empty herd: used where a failure is not fatal. */
+  async #listAgentsQuietly(serverId: string): Promise<AgentInfo[]> {
+    try {
+      const client = await this.#clientFor(serverId);
+      return await client.listAgents();
+    } catch {
+      return [];
+    }
+  }
+
+  /** The `remote.allowSend` gate. Shared by every path that types into a pane. */
+  #refuseSend(server: ServerDescription, ref: string): string | undefined {
+    if (server.isLocal) return undefined;
+    if (this.#registry?.allowsSend(server.id) ?? false) return undefined;
+    return [
+      `I did not send anything to **${ref}**: ${server.label} is read-only.`,
+      `Add "${server.label}" to remote.allowSend in the plugin config to allow prompts there.`,
+    ].join("\n");
+  }
+
+  #unreachable(server: ServerDescription, error: unknown): string {
+    if (server.isLocal) return describeFailure(error);
+    return `I cannot reach ${server.label}: ${shortMessage(error)}.`;
+  }
+
+  async #safeRead(client: HerdrClient, paneId: string, lines: number): Promise<string | undefined> {
+    try {
+      return (await client.readAgent(paneId, { source: "recent", lines })).text;
     } catch {
       return undefined;
     }
@@ -239,6 +472,11 @@ export class HerdrRuntime {
 
 export function describeError(error: unknown): string {
   return error instanceof Error ? error.message : String(error);
+}
+
+/** The last, actionable segment of a layered transport message. */
+function shortMessage(error: unknown): string {
+  return shortReason(describeError(error));
 }
 
 export function describeFailure(error: unknown): string {

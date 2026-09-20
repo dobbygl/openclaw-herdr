@@ -2,7 +2,11 @@ import os from "node:os";
 import path from "node:path";
 import fs from "node:fs/promises";
 import { afterEach, beforeEach, describe, expect, it } from "vitest";
+import { LOCAL_SERVER_ID } from "../src/core/servers.js";
 import { WatchStore, type WatchInput } from "../src/core/watch-store.js";
+
+/** The local pane every fixture below watches. */
+const LOCAL = { serverId: LOCAL_SERVER_ID, paneId: "w1:p1" };
 
 let dir: string;
 let logs: string[];
@@ -66,13 +70,13 @@ describe("WatchStore", () => {
 
     const other = await store.add(input({ sessionKey: "s2", sawWorking: true }));
     expect(other.replaced).toBeUndefined();
-    expect(store.listByPane("w1:p1")).toHaveLength(2);
+    expect(store.listByPane(LOCAL)).toHaveLength(2);
     expect(other.record.sawWorking).toBe(true);
 
     const again = await store.add(input({ promptPreview: "second prompt" }));
     expect(again.replaced?.id).toBe(first.record.id);
-    expect(store.listByPane("w1:p1").map((w) => w.sessionKey).sort()).toEqual(["s1", "s2"]);
-    expect(store.byPaneAndSession("w1:p1", "s1")?.promptPreview).toBe("second prompt");
+    expect(store.listByPane(LOCAL).map((w) => w.sessionKey).sort()).toEqual(["s1", "s2"]);
+    expect(store.byPaneAndSession(LOCAL, "s1")?.promptPreview).toBe("second prompt");
     expect(store.byId(first.record.id)).toBeUndefined();
   });
 
@@ -113,6 +117,65 @@ describe("WatchStore", () => {
     expect(reloaded?.notificationSeq).toBe(3);
     expect(reloaded?.settledStatus).toBe("done");
     expect(reloaded?.pendingDelivery?.attempts).toBe(2);
+    expect(logs).toEqual([]);
+  });
+
+  it("keeps the same pane id on two servers apart", async () => {
+    const store = new WatchStore(dir, logger);
+    await store.load();
+    const here = await store.add(input());
+    const there = await store.add(input({ serverId: "abc123" }));
+    expect(here.replaced).toBeUndefined();
+    expect(there.replaced).toBeUndefined();
+    expect(here.record.serverId).toBe("local");
+    expect(store.list()).toHaveLength(2);
+    expect(store.listByPane(LOCAL)).toHaveLength(1);
+    expect(store.listByPane({ serverId: "abc123", paneId: "w1:p1" }).map((w) => w.id)).toEqual([there.record.id]);
+    expect(store.byPaneAndSession({ serverId: "abc123", paneId: "w1:p1" }, "s1")?.id).toBe(there.record.id);
+
+    // Re-watching the remote pane replaces only the remote watch.
+    const again = await store.add(input({ serverId: "abc123", promptPreview: "again" }));
+    expect(again.replaced?.id).toBe(there.record.id);
+    expect(store.byId(here.record.id)).toBeDefined();
+  });
+
+  it("migrates a pre-2.5 record without a server to local", async () => {
+    await writeFile(
+      JSON.stringify({
+        version: 1,
+        watches: [
+          {
+            id: "old-local",
+            paneId: "w6:p1",
+            terminalId: "term_3",
+            agentLabel: "codex",
+            sessionKey: "agent:main:telegram:1",
+            promptPreview: "p",
+            createdAt: "2026-09-19T10:00:00.000Z",
+            deadlineAt: "2026-09-20T10:00:00.000Z",
+          },
+          {
+            id: "remote-one",
+            serverId: "abc123",
+            paneId: "w6:p1",
+            terminalId: "term_4",
+            agentLabel: "claude",
+            sessionKey: "agent:main:telegram:1",
+            promptPreview: "p",
+            createdAt: "2026-09-19T10:00:00.000Z",
+            deadlineAt: "2026-09-20T10:00:00.000Z",
+          },
+          // An empty server is as good as none: it must not stay unaddressable.
+          { id: "blank", serverId: "", paneId: "w6:p2", terminalId: "t", agentLabel: "claude", sessionKey: "s1", promptPreview: "p", createdAt: "2026-09-19T10:00:00.000Z", deadlineAt: "2026-09-20T10:00:00.000Z" },
+        ],
+      }),
+    );
+    const store = new WatchStore(dir, logger);
+    await store.load();
+    expect(store.byId("old-local")?.serverId).toBe("local");
+    expect(store.byId("blank")?.serverId).toBe("local");
+    expect(store.byId("remote-one")?.serverId).toBe("abc123");
+    expect(store.listByPane({ serverId: "local", paneId: "w6:p1" }).map((w) => w.id)).toEqual(["old-local"]);
     expect(logs).toEqual([]);
   });
 

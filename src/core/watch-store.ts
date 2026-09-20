@@ -2,6 +2,7 @@ import fs from "node:fs/promises";
 import path from "node:path";
 import { randomUUID } from "node:crypto";
 import type { AgentStatus } from "../herdr/types.js";
+import { LOCAL_SERVER_ID } from "./servers.js";
 
 /**
  * Status a watch can settle on. `blocked` is the only non-terminal one: the
@@ -50,6 +51,12 @@ export interface PendingDelivery {
 
 export interface WatchRecord {
   id: string;
+  /**
+   * Herdr server this watch lives on: `local`, or a machine's *profile id*
+   * (never its label, which the operator may rename). Records written before
+   * the plugin knew about machines are migrated to `local` on load.
+   */
+  serverId: string;
   paneId: string;
   /** Herdr terminal that occupied the pane when the watch started. */
   terminalId: string;
@@ -92,11 +99,22 @@ export interface WatchRecord {
   pendingDelivery?: PendingDelivery;
 }
 
-/** What `add()` needs; the bookkeeping fields are filled in here. */
+/** Identity of a watched pane: the same pane id may exist on several servers. */
+export interface PaneRef {
+  /** `local` or a machine profile id. */
+  serverId: string;
+  paneId: string;
+}
+
+/**
+ * What `add()` needs; the bookkeeping fields are filled in here. `serverId`
+ * defaults to `local`, so a caller that only ever watches this host stays as
+ * short as it was before machines existed.
+ */
 export type WatchInput = Omit<
   WatchRecord,
-  "id" | "createdAt" | "notificationSeq" | "settledStatus" | "pendingDelivery" | "sawWorking"
-> & { sawWorking?: boolean };
+  "id" | "createdAt" | "notificationSeq" | "settledStatus" | "pendingDelivery" | "sawWorking" | "serverId"
+> & { sawWorking?: boolean; serverId?: string };
 
 /** `pendingDelivery: null` clears the slot (`undefined` cannot, under exactOptionalPropertyTypes). */
 export type WatchPatch = Partial<Omit<WatchRecord, "id" | "createdAt" | "pendingDelivery">> & {
@@ -119,9 +137,10 @@ export interface StoreLogger {
  * It only holds routing state; Herdr remains the source of truth for what the
  * agent is doing.
  *
- * Keying policy (finding 10): at most one watch per (paneId, sessionKey). Two
- * chats may watch the same pane at the same time and both get notified; a new
- * watch from the same session replaces that session's previous one.
+ * Keying policy (finding 10, extended for machines): at most one watch per
+ * (serverId, paneId, sessionKey). Two chats may watch the same pane at the same
+ * time and both get notified; a new watch from the same session replaces that
+ * session's previous one. `w1:p1` on two machines are two different panes.
  */
 export class WatchStore {
   #file: string;
@@ -193,19 +212,19 @@ export class WatchStore {
   }
 
   /** First watch on that pane; only meaningful for display, never for scoping. */
-  byPane(paneId: string): WatchRecord | undefined {
+  byPane(ref: PaneRef): WatchRecord | undefined {
     this.#assertLoaded();
-    return this.#watches.find((watch) => watch.paneId === paneId);
+    return this.#watches.find((watch) => samePane(watch, ref));
   }
 
-  listByPane(paneId: string): WatchRecord[] {
+  listByPane(ref: PaneRef): WatchRecord[] {
     this.#assertLoaded();
-    return this.#watches.filter((watch) => watch.paneId === paneId);
+    return this.#watches.filter((watch) => samePane(watch, ref));
   }
 
-  byPaneAndSession(paneId: string, sessionKey: string): WatchRecord | undefined {
+  byPaneAndSession(ref: PaneRef, sessionKey: string): WatchRecord | undefined {
     this.#assertLoaded();
-    return this.#watches.find((watch) => watch.paneId === paneId && watch.sessionKey === sessionKey);
+    return this.#watches.find((watch) => samePane(watch, ref) && watch.sessionKey === sessionKey);
   }
 
   /**
@@ -215,12 +234,14 @@ export class WatchStore {
    */
   async add(input: WatchInput): Promise<{ record: WatchRecord; replaced?: WatchRecord }> {
     this.#assertLoaded();
+    const serverId = input.serverId ?? LOCAL_SERVER_ID;
     const replaced = this.#watches.find(
-      (watch) => watch.paneId === input.paneId && watch.sessionKey === input.sessionKey,
+      (watch) => samePane(watch, { serverId, paneId: input.paneId }) && watch.sessionKey === input.sessionKey,
     );
     if (replaced) this.#watches = this.#watches.filter((watch) => watch.id !== replaced.id);
     const record: WatchRecord = {
       ...input,
+      serverId,
       sawWorking: input.sawWorking ?? false,
       notificationSeq: 0,
       id: randomUUID(),
@@ -306,6 +327,8 @@ function readRecord(value: unknown): ReadOutcome {
 
   const record: WatchRecord = {
     id: value.id as string,
+    // Pre-2.5 records carry no server: they can only ever have been local.
+    serverId: typeof value.serverId === "string" && value.serverId ? value.serverId : LOCAL_SERVER_ID,
     paneId: value.paneId as string,
     terminalId: typeof value.terminalId === "string" ? value.terminalId : "",
     agentLabel: typeof value.agentLabel === "string" ? value.agentLabel : "agent",
@@ -324,6 +347,11 @@ function readRecord(value: unknown): ReadOutcome {
   const pending = readPending(value.pendingDelivery);
   if (pending) record.pendingDelivery = pending;
   return { ok: true, record };
+}
+
+/** Watch identity is (serverId, paneId): a pane id alone is not unique. */
+export function samePane(watch: PaneRef, ref: PaneRef): boolean {
+  return watch.serverId === ref.serverId && watch.paneId === ref.paneId;
 }
 
 function readPending(value: unknown): PendingDelivery | undefined {

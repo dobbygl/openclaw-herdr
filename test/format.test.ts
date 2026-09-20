@@ -4,6 +4,7 @@ import {
   formatAgentList,
   formatNotification,
   formatSendAccepted,
+  formatServerList,
   formatStatus,
   LABEL_MAX_CHARS,
   PANE_BLOCK_MAX_CHARS,
@@ -31,6 +32,7 @@ const agent = (over: Partial<AgentInfo> = {}): AgentInfo => ({
 
 const watch = (over: Partial<WatchRecord> = {}): WatchRecord => ({
   id: "watch-1",
+  serverId: "local",
   paneId: "w6:p1",
   terminalId: "term_1",
   agentLabel: "claude",
@@ -93,6 +95,61 @@ describe("formatAgentList", () => {
     expect(out).not.toContain("w6:p2");
     expect(out).toContain("w6:p3");
     expect(lines.at(-1)).toBe("   watching");
+  });
+});
+
+describe("formatServerList", () => {
+  const local = { id: "local", label: "local", isLocal: true };
+  const buildbox = { id: "abc123", label: "buildbox", isLocal: false };
+  const lab = { id: "ddd444", label: "lab", isLocal: false };
+
+  it("groups the herd by machine with copyable refs", () => {
+    const out = formatServerList(
+      [
+        { ...local, agents: [agent()] },
+        { ...buildbox, agents: [agent({ pane_id: "w1:p1", agent: "codex", agent_status: "idle" })] },
+        { ...lab, down: "ssh authentication failed" },
+      ],
+      [watch({ serverId: "abc123", paneId: "w1:p1" })],
+    );
+    expect(out.split("\n")).toEqual([
+      "Herdr agents:",
+      "● **w6:p1** claude · working",
+      "Machine buildbox:",
+      "○ **w1:p1@buildbox** codex · idle",
+      "   watching",
+      "Machine lab: down — ssh authentication failed",
+    ]);
+  });
+
+  it("marks a watch on the right server only", () => {
+    const groups = [
+      { ...local, agents: [agent({ pane_id: "w1:p1" })] },
+      { ...buildbox, agents: [agent({ pane_id: "w1:p1" })] },
+    ];
+    const out = formatServerList(groups, [watch({ serverId: "local", paneId: "w1:p1" })]);
+    const lines = out.split("\n");
+    expect(lines[2]).toBe("   watching");
+    expect(lines.at(-1)).toBe("● **w1:p1@buildbox** claude · working");
+  });
+
+  it("says when a server has nothing running", () => {
+    const out = formatServerList([{ ...local, agents: [] }, { ...buildbox, agents: [] }], []);
+    expect(out).toContain("no agent on this host");
+    expect(out).toContain("no agent there");
+    // Only this host, and empty: the original sentence, with the hint.
+    expect(formatServerList([{ ...local, agents: [] }], [])).toContain("Start claude or codex");
+  });
+
+  it("tells the operator what to check when the local server is down", () => {
+    const out = formatServerList([{ ...local, down: "ENOENT" }, { ...buildbox, agents: [agent()] }], []);
+    expect(out.split("\n")[0]).toBe("Cannot reach Herdr: ENOENT. Is the Herdr server running?");
+    expect(out).toContain("Machine buildbox:");
+  });
+
+  it("appends a note about the machine list", () => {
+    const out = formatServerList([{ ...local, agents: [agent()] }], [], "Machine list unavailable: herdr not found");
+    expect(out.split("\n").at(-1)).toBe("Machine list unavailable: herdr not found");
   });
 });
 

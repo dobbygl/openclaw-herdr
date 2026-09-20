@@ -93,6 +93,7 @@ function notifier(host: Fake, deliveryTimeoutMs = 60_000): OpenClawNotifier {
 
 const watch: WatchRecord = {
   id: "w-1",
+  serverId: "local",
   paneId: "w6:p1",
   terminalId: "term_1",
   agentLabel: "claude",

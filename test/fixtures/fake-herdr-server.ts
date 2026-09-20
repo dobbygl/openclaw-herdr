@@ -23,6 +23,10 @@ export interface FakeHerdr {
   readonly dir: string;
   /** Push one `pane.agent_status_changed` event to a live subscription. */
   emit(pane: string, status: string): void;
+  /** Every `agent.prompt` this server accepted, in order. */
+  readonly prompts: Array<{ target: string; text: string }>;
+  /** Patches what `agent.get` reports for one pane. */
+  setAgent(pane: string, patch: Record<string, unknown>): void;
   close(): Promise<void>;
 }
 
@@ -41,6 +45,12 @@ export async function startFakeHerdr(prefix = "herdr-fake-"): Promise<FakeHerdr>
   const socketPath = path.join(dir, "herdr.sock");
   const accepted = new Set<net.Socket>();
   const streams = new Map<string, net.Socket>();
+  const prompts: Array<{ target: string; text: string }> = [];
+  /** What `agent.get` reports, per pane. Mutable, so a task can "finish". */
+  const panes = new Map<string, Record<string, unknown>>([
+    ["w1:p1", { pane_id: "w1:p1", terminal_id: "term_1", agent: "claude", agent_status: "idle" }],
+    ["w1:p2", { pane_id: "w1:p2", terminal_id: "term_2", agent: "codex", agent_status: "idle" }],
+  ]);
 
   const server = net.createServer((socket) => {
     accepted.add(socket);
@@ -80,6 +90,18 @@ export async function startFakeHerdr(prefix = "herdr-fake-"): Promise<FakeHerdr>
               ],
             },
           });
+          socket.end();
+          break;
+        case "agent.get": {
+          const pane = panes.get(String(request.params.target ?? ""));
+          if (!pane) reply({ id: "", error: { code: "not_found", message: `no agent on ${String(request.params.target)}` } });
+          else reply({ id: request.id, result: { type: "agent_get", agent: pane } });
+          socket.end();
+          break;
+        }
+        case "agent.prompt":
+          prompts.push({ target: String(request.params.target ?? ""), text: String(request.params.text ?? "") });
+          reply({ id: request.id, result: { type: "prompt_submitted", submitted: true } });
           socket.end();
           break;
         case "agent.read":
@@ -122,6 +144,10 @@ export async function startFakeHerdr(prefix = "herdr-fake-"): Promise<FakeHerdr>
   return {
     socketPath,
     dir,
+    prompts,
+    setAgent(pane: string, patch: Record<string, unknown>) {
+      panes.set(pane, { ...(panes.get(pane) ?? { pane_id: pane, terminal_id: "term_1", agent: "claude" }), ...patch });
+    },
     emit(pane: string, status: string) {
       streams
         .get(pane)
