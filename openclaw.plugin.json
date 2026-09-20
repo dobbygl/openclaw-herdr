@@ -1,0 +1,51 @@
+{
+  "id": "herdr",
+  "name": "Herdr",
+  "description": "Drive Codex, Claude Code and other coding agents running in Herdr panes: list agents, send prompts from chat, read output, and get woken up when an agent finishes or needs input.",
+  "version": "0.1.0",
+  "activation": {
+    "onStartup": true,
+    "onCommands": ["herdr"]
+  },
+  "commandAliases": [
+    { "name": "herdr", "kind": "runtime-slash" }
+  ],
+  "contracts": {
+    "tools": [
+      "herdr_list",
+      "herdr_send",
+      "herdr_read",
+      "herdr_watch",
+      "herdr_status"
+    ]
+  },
+  "toolMetadata": {
+    "herdr_list": { "optional": true },
+    "herdr_send": { "optional": true },
+    "herdr_read": { "optional": true },
+    "herdr_watch": { "optional": true },
+    "herdr_status": { "optional": true }
+  },
+  "configSchema": {
+    "type": "object",
+    "additionalProperties": false,
+    "properties": {
+      "socketPath": {
+        "type": "string",
+        "description": "Herdr server socket. Defaults to $HERDR_SOCKET_PATH or ~/.config/herdr/herdr.sock."
+      },
+      "requestTimeoutMs": {
+        "type": "number",
+        "description": "Timeout for one Herdr request. Defaults to 5000."
+      },
+      "watchTimeoutMinutes": {
+        "type": "number",
+        "description": "Ceiling for a watch that never settles. Defaults to 720."
+      },
+      "readLines": {
+        "type": "number",
+        "description": "Lines of pane output included in notifications and /herdr read. Defaults to 40."
+      }
+    }
+  }
+}
