@@ -78,7 +78,7 @@ Stream C — transport, notifier, typing (`client.ts`, `framing.ts`, `notifier.t
 - [x] Type-check tests; smoke fails loudly on subscription errors.
 
 After merge (owner: maintainer):
-- [ ] F11 live loop from Telegram (first attempt on 2026-09-20 15:11 proved send and idle detection work but heartbeat never produced a chat turn; delivery now goes through `chat.send`, retest pending): send, finish, repeated block, Gateway restart, recovery, with no extra user interaction.
+- [x] F11 live loop from Telegram: send, idle detection and proactive delivery verified on 2026-09-20 21:13 (`delivered idle for w7:p1 in 20749ms`) after switching to a `wake` heartbeat turn; repeated block, Gateway restart mid-watch and recovery still to be exercised: send, finish, repeated block, Gateway restart, recovery, with no extra user interaction.
 - [ ] Align README, messages and limits with what was verified; then continue to M2.
 
 ### M2 — Robustness
