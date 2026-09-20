@@ -12,6 +12,8 @@
   [Features](#features) • [Installation](#installation) • [Usage](#usage) • [How it works](#how-it-works) • [Configuration](#configuration)
 </div>
 
+<p align="center"><img src="assets/hero.png" width="800" alt="A goat kid herds a row of terminal-window sheep while a lobster waves from a chat bubble"></p>
+
 `openclaw-herdr` is an [OpenClaw](https://openclaw.ai) plugin that lets you talk to Claude Code, Codex, or any other coding agent already running inside [Herdr](https://herdr.dev) panes. Send a prompt from Telegram or the OpenClaw web chat, keep the terminal visible for yourself, and get pinged when the agent finishes or stops to ask a question.
 
 It replaces screen scraping with Herdr's own agent lifecycle API, so it does not care which version of Herdr, Claude Code or Codex you run today.
