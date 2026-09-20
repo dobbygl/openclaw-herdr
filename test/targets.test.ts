@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import { resolveTarget } from "../src/core/targets.js";
+import { resolveTarget, resolveTargetRef } from "../src/core/targets.js";
 import type { AgentInfo } from "../src/herdr/types.js";
 
 const agent = (over: Partial<AgentInfo>): AgentInfo => ({
@@ -123,5 +123,38 @@ describe("resolveTarget", () => {
     const none = resolveTarget([deadPane], "reviewer");
     expect(none.ok).toBe(false);
     if (!none.ok) expect(none.reason).toBe("not_found");
+  });
+
+  describe("a selector that still carries a machine suffix", () => {
+    it("never matches, even if it would otherwise look like a pane id or name", () => {
+      const result = resolveTarget([claude, codex], "w6:p1@buildbox");
+      expect(result.ok).toBe(false);
+      if (result.ok) return;
+      expect(result.reason).toBe("not_found");
+      expect(result.candidates).toEqual([]);
+    });
+
+    it("says machine suffixes are resolved per machine, not guessed at here", () => {
+      const result = resolveTarget([claude, codex], "reviewer@buildbox");
+      expect(result.ok).toBe(false);
+      if (result.ok) return;
+      expect(result.message).toContain("per machine");
+    });
+  });
+});
+
+describe("resolveTargetRef", () => {
+  const claude = agent({ pane_id: "w6:p1", terminal_id: "term_1", agent: "claude" });
+  const codex = agent({ pane_id: "w6:p2", terminal_id: "term_2", agent: "codex", name: "reviewer" });
+
+  it("delegates to resolveTarget with the bare selector, ignoring server", () => {
+    expect(resolveTargetRef([claude, codex], { selector: "w6:p2" })).toEqual(resolveTarget([claude, codex], "w6:p2"));
+    expect(resolveTargetRef([claude, codex], { selector: "reviewer", server: "buildbox" })).toEqual(
+      resolveTarget([claude, codex], "reviewer"),
+    );
+  });
+
+  it("falls back to resolveTarget's no-selector behavior when selector is absent", () => {
+    expect(resolveTargetRef([claude], {})).toEqual(resolveTarget([claude]));
   });
 });
