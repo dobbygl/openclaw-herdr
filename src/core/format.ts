@@ -1,5 +1,5 @@
 import type { AgentInfo, AgentStatus } from "../herdr/types.js";
-import { compactPaneText } from "./compact.js";
+import { compactPaneText, DEFAULT_MAX_CHARS, DEFAULT_MAX_LINE_CHARS } from "./compact.js";
 import type { WatchRecord } from "./watch-store.js";
 
 const STATUS_ICON: Record<AgentStatus, string> = {
@@ -10,10 +10,26 @@ const STATUS_ICON: Record<AgentStatus, string> = {
   unknown: "?",
 };
 
+/** Text limits. Chat is read on a phone, so every variable-length field has a ceiling. */
+export const PANE_BLOCK_MAX_CHARS = DEFAULT_MAX_CHARS;
+export const PANE_LINE_MAX_CHARS = DEFAULT_MAX_LINE_CHARS;
+export const PREVIEW_MAX_CHARS = 160;
+export const LABEL_MAX_CHARS = 60;
+export const TITLE_MAX_CHARS = 80;
+export const PATH_MAX_CHARS = 64;
+
+export interface PaneBlockOptions {
+  /** Character budget for the fenced block. Default 3000. */
+  maxChars?: number;
+  /** Ceiling for one line inside the block. Default 400. */
+  maxLineChars?: number;
+}
+
 export function formatAgentLine(agent: AgentInfo): string {
-  const label = agent.name ? `${agent.name} (${agent.agent ?? "?"})` : (agent.agent ?? "no agent");
+  const raw = agent.name ? `${agent.name} (${agent.agent ?? "?"})` : (agent.agent ?? "no agent");
+  const label = preview(raw, LABEL_MAX_CHARS);
   const cwd = agent.foreground_cwd ?? agent.cwd ?? "";
-  const title = agent.terminal_title_stripped ? ` — ${agent.terminal_title_stripped}` : "";
+  const title = agent.terminal_title_stripped ? ` — ${preview(agent.terminal_title_stripped, TITLE_MAX_CHARS)}` : "";
   return `${STATUS_ICON[agent.agent_status] ?? "?"} **${agent.pane_id}** ${label} · ${agent.agent_status}${title}${cwd ? `\n   ${shortenPath(cwd)}` : ""}`;
 }
 
@@ -27,7 +43,7 @@ export function formatAgentList(agents: AgentInfo[], watches: WatchRecord[]): st
 
 export function formatSendAccepted(agent: AgentInfo, text: string, watching: boolean): string {
   return [
-    `Sent to **${agent.pane_id}** (${agent.name ?? agent.agent ?? "?"}).`,
+    `Sent to **${agent.pane_id}** (${preview(agent.name ?? agent.agent ?? "?", LABEL_MAX_CHARS)}).`,
     watching ? "I will tell you when it finishes or needs input." : "Not watching; use /herdr status to check.",
     `> ${preview(text)}`,
   ].join("\n");
@@ -58,20 +74,42 @@ export function formatNotification(
   const parts = [headline, `> ${preview(watch.promptPreview)}`];
   const block = tail ? trimTail(tail, 20) : "";
   if (block) parts.push("", block);
-  if (status === "blocked") parts.push("", "Answer it in the terminal, or send a reply with /herdr <pane>: <text>.");
+  if (status === "blocked") {
+    // Sends are refused while the agent is blocked, so do not promise a reply from chat.
+    parts.push(
+      "",
+      "Answer it in the terminal (Herdr or Collie): I cannot answer a prompt for you while the agent is blocked.",
+      `/herdr read ${watch.paneId} shows the prompt again. Answering from chat is not implemented yet.`,
+    );
+  }
   return parts.join("\n");
 }
 
-export function preview(text: string, max = 160): string {
+export function preview(text: string, max = PREVIEW_MAX_CHARS): string {
   const flat = text.replace(/\s+/gu, " ").trim();
   return flat.length > max ? flat.slice(0, max - 1) + "…" : flat;
 }
 
-export function trimTail(text: string, maxLines: number): string {
-  const compact = compactPaneText(text, { maxLines });
+/** Pane output as a fenced block, bounded in lines, characters and line length. */
+export function trimTail(text: string, maxLines: number, options: PaneBlockOptions = {}): string {
+  const compact = compactPaneText(text, {
+    maxLines,
+    maxChars: options.maxChars ?? PANE_BLOCK_MAX_CHARS,
+    maxLineChars: options.maxLineChars ?? PANE_LINE_MAX_CHARS,
+  });
   return compact ? "```\n" + compact + "\n```" : "";
 }
 
-export function shortenPath(cwd: string, home = process.env.HOME ?? ""): string {
-  return home && cwd.startsWith(home) ? "~" + cwd.slice(home.length) : cwd;
+export function shortenPath(cwd: string, home = process.env.HOME ?? "", max = PATH_MAX_CHARS): string {
+  const short = home && cwd.startsWith(home) ? "~" + cwd.slice(home.length) : cwd;
+  if (short.length <= max) return short;
+  const segments = short.split("/").filter((segment) => segment !== "");
+  const kept: string[] = [];
+  for (let index = segments.length - 1; index >= 0; index -= 1) {
+    const segment = segments[index] as string;
+    if ([segment, ...kept].join("/").length + 2 > max) break;
+    kept.unshift(segment);
+  }
+  if (kept.length === 0) return "…" + short.slice(short.length - (max - 1));
+  return "…/" + kept.join("/");
 }

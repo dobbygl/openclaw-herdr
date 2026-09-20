@@ -4,15 +4,26 @@ export type TargetResolution =
   | { ok: true; agent: AgentInfo }
   | { ok: false; reason: "none" | "ambiguous" | "not_found"; message: string; candidates: AgentInfo[] };
 
+/** Selector kinds, most specific first. A level is only consulted when every earlier level matched nothing. */
+const LEVELS: ReadonlyArray<{ label: string; hint: string; value: (agent: AgentInfo) => string }> = [
+  { label: "pane id", hint: "use a terminal id", value: (agent) => agent.pane_id },
+  { label: "terminal id", hint: "use a pane id", value: (agent) => agent.terminal_id },
+  { label: "agent name", hint: "use a pane id", value: (agent) => agent.name ?? "" },
+  { label: "agent kind", hint: "use a pane id", value: (agent) => agent.agent ?? "" },
+];
+
 /**
  * Turn a user-typed selector into exactly one live Herdr agent.
- * Accepts a pane id (`w6:p1`), a Herdr agent name, a terminal id, or an agent
- * kind (`claude`, `codex`) when only one such agent is running. Anything that
- * matches more than one agent is an error: the plugin never guesses.
+ *
+ * Matching has an explicit precedence: pane id, then terminal id, then agent
+ * name, then agent kind (`claude`, `codex`). The next level is only tried when
+ * the current one has no match at all, so a pane id always wins over another
+ * agent's name, and a name always wins over a kind. Two or more matches inside
+ * one level are a refusal that lists the candidates: the plugin never guesses.
  */
 export function resolveTarget(agents: AgentInfo[], selector?: string): TargetResolution {
   const live = agents.filter((agent) => agent.agent !== null);
-  if (!selector) {
+  if (!selector || selector.trim() === "") {
     if (live.length === 1) return { ok: true, agent: live[0] as AgentInfo };
     if (live.length === 0) {
       return { ok: false, reason: "none", message: "Herdr sees no running coding agent.", candidates: [] };
@@ -25,22 +36,20 @@ export function resolveTarget(agents: AgentInfo[], selector?: string): TargetRes
     };
   }
   const wanted = selector.trim().toLowerCase();
-  const exact = live.filter(
-    (agent) =>
-      agent.pane_id.toLowerCase() === wanted ||
-      agent.terminal_id.toLowerCase() === wanted ||
-      (agent.name ?? "").toLowerCase() === wanted,
-  );
-  if (exact.length === 1) return { ok: true, agent: exact[0] as AgentInfo };
-  const byKind = live.filter((agent) => (agent.agent ?? "").toLowerCase() === wanted);
-  if (byKind.length === 1) return { ok: true, agent: byKind[0] as AgentInfo };
-  if (byKind.length > 1) {
-    return {
-      ok: false,
-      reason: "ambiguous",
-      message: `${selector} matches ${byKind.length} agents; use a pane id: ${describeCandidates(byKind)}.`,
-      candidates: byKind,
-    };
+  for (const level of LEVELS) {
+    const matches = live.filter((agent) => {
+      const value = level.value(agent);
+      return value !== "" && value.toLowerCase() === wanted;
+    });
+    if (matches.length === 1) return { ok: true, agent: matches[0] as AgentInfo };
+    if (matches.length > 1) {
+      return {
+        ok: false,
+        reason: "ambiguous",
+        message: `${selector} matches ${matches.length} agents by ${level.label}; ${level.hint}: ${describeCandidates(matches)}.`,
+        candidates: matches,
+      };
+    }
   }
   return {
     ok: false,
