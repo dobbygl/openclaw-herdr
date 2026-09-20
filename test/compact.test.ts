@@ -6,11 +6,11 @@ import {
 } from "../src/core/compact.js";
 
 const frame = [
-  "  Si quieres comprobarlo tú mismo en la interfaz, cualquier ficha",
-  "  logotipo.",
+  "  The three failing tests were caused by a stale fixture; I regenerated",
+  "  it and the suite is green again.",
   "",
   "✻ Cogitated for 21s · done 1:13 PM",
-  "                                                                               new task? /clear to save 335.8k tokens",
+  "                                                                               new task? /clear to save 12.3k tokens",
   "─".repeat(120),
   "❯ ",
   "─".repeat(120),
