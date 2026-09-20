@@ -27,14 +27,19 @@ Two mechanisms were tried and disproved on a real host:
 2. Queue a next-turn injection in the originating session as durable context
    (idempotency key `herdr:<watchId>:<status>:<notificationSeq>`; a key hit is
    not an error).
-3. Run one turn in that session right away with the public heartbeat runtime,
-   `api.runtime.system.runHeartbeatOnce({ sessionKey, agentId, reason,
-   heartbeat: { target: "last" } })`. The turn consumes the injection and
-   delivers its reply to the session's last active channel. Only
-   `status: "ran"` counts as delivered. `skipped` (session busy, cooldown)
-   and `failed` throw, so the watcher retries with backoff until the watch
-   deadline.
-4. No `chat.send`, no CLI fallback, no request to make the plugin "trusted".
+3. Queue the same text as a keyed, replaceable system event for that session
+   (`runtime.system.enqueueSystemEvent`), the payload a wake heartbeat reads.
+4. Run one turn in that session right away with the public heartbeat runtime,
+   `api.runtime.system.runHeartbeatOnce({ reason: "wake", sessionKey,
+   agentId, heartbeat: { target: "last" } })`. The literal reason `wake`
+   marks the run as a wake payload, which is what lets it proceed when the
+   agent's HEARTBEAT.md is empty or missing (a plain reason is answered with
+   `skipped: empty-heartbeat-file`, as observed live). The turn consumes the
+   event and the injection and delivers its reply to the session's last
+   active channel. Only `status: "ran"` counts as delivered. `skipped`
+   (session busy, cooldown) and `failed` throw, so the watcher retries with
+   backoff until the watch deadline.
+5. No `chat.send`, no CLI fallback, no request to make the plugin "trusted".
 
 ## Consequences
 

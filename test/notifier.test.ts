@@ -1,12 +1,19 @@
 import { describe, expect, it } from "vitest";
 import type { WatchRecord } from "../src/core/watch-store.js";
-import type { HostApi, HostHeartbeatRunOptions, HostHeartbeatRunResult, HostNextTurnInjection } from "../src/openclaw/host-api.js";
+import type {
+  HostApi,
+  HostHeartbeatRunOptions,
+  HostHeartbeatRunResult,
+  HostNextTurnInjection,
+  HostSystemEventOptions,
+} from "../src/openclaw/host-api.js";
 import { DeliverySkippedError, OpenClawNotifier } from "../src/openclaw/notifier.js";
 
 interface Fake {
   api: HostApi;
   injections: HostNextTurnInjection[];
   runs: HostHeartbeatRunOptions[];
+  events: Array<{ text: string; options: HostSystemEventOptions }>;
   logs: string[];
 }
 
@@ -21,6 +28,7 @@ function fakeHost(
 ): Fake {
   const injections: HostNextTurnInjection[] = [];
   const runs: HostHeartbeatRunOptions[] = [];
+  const events: Array<{ text: string; options: HostSystemEventOptions }> = [];
   const logs: string[] = [];
   const api: HostApi = {
     logger: {
@@ -46,6 +54,10 @@ function fakeHost(
       : {
           runtime: {
             system: {
+              enqueueSystemEvent: (text: string, options: HostSystemEventOptions) => {
+                events.push({ text, options });
+                return true;
+              },
               runHeartbeatOnce: async (opts?: HostHeartbeatRunOptions) => {
                 runs.push(opts ?? {});
                 if (options.result === "throw") throw new Error("heartbeat runtime exploded");
@@ -55,7 +67,7 @@ function fakeHost(
           },
         }),
   };
-  return { api, injections, runs, logs };
+  return { api, injections, runs, events, logs };
 }
 
 const ran: HostHeartbeatRunResult = { status: "ran", durationMs: 1234 };
@@ -102,12 +114,20 @@ describe("OpenClawNotifier", () => {
     await new OpenClawNotifier(host.api).notify(watch, "idle", "finished");
     expect(host.runs).toHaveLength(1);
     expect(host.runs[0]).toEqual({
-      reason: "herdr idle w6:p1",
+      reason: "wake",
       sessionKey: "agent:main:telegram:1",
       agentId: "main",
       heartbeat: { target: "last" },
     });
     expect(host.logs.some((l) => l.includes("delivered idle for w6:p1"))).toBe(true);
+  });
+
+  it("queues a replaceable system event keyed like the injection", async () => {
+    const host = fakeHost({ result: ran });
+    await new OpenClawNotifier(host.api).notify({ ...watch, notificationSeq: 2 } as WatchRecord, "blocked", "needs input");
+    expect(host.events).toHaveLength(1);
+    expect(host.events[0]?.options).toEqual({ sessionKey: "agent:main:telegram:1", contextKey: "herdr:w-1:blocked:2", replace: true });
+    expect(host.events[0]?.text).toContain("needs input");
   });
 
   it("honours a configured heartbeat target", async () => {

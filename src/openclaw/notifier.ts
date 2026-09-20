@@ -3,6 +3,14 @@ import type { WatchRecord } from "../core/watch-store.js";
 import type { HostApi, HostHeartbeatRunResult } from "./host-api.js";
 
 /**
+ * The heartbeat runner treats the literal reason `wake` as a "wake payload":
+ * that is what lets the turn run even when the agent's HEARTBEAT.md is empty
+ * or missing (otherwise the runner answers `skipped: empty-heartbeat-file`).
+ * It is the same convention `openclaw system event --mode now` relies on.
+ */
+const WAKE_REASON = "wake";
+
+/**
  * A watch record plus the optional per-event counter the watcher maintains.
  * Declared structurally so the store stays free to add (or not add) the field.
  */
@@ -37,12 +45,16 @@ export class DeliverySkippedError extends Error {
  *     never collapse into one. `enqueued: false` with an id means the key is
  *     already queued (a retry), which is fine; `enqueued: false` with no id
  *     means the host dropped it, so we throw and the watcher keeps the watch.
- *  2. `runtime.system.runHeartbeatOnce({ sessionKey, agentId })` runs one
- *     agent turn in that session immediately, regardless of whether periodic
- *     heartbeats are configured. That turn consumes the injection and delivers
- *     its reply to the session's channel. Only `status: "ran"` counts as
- *     delivered; `skipped` (session busy, cooldown) and `failed` throw so the
- *     watcher's pending-delivery retry engages.
+ *  2. `runtime.system.enqueueSystemEvent` queues the same text as a system
+ *     event for that session (keyed, replaceable), which is the payload a
+ *     wake heartbeat reads.
+ *  3. `runtime.system.runHeartbeatOnce({ reason: "wake", sessionKey,
+ *     agentId })` runs one agent turn in that session immediately, regardless
+ *     of whether periodic heartbeats are configured or HEARTBEAT.md exists.
+ *     That turn consumes the event and the injection and delivers its reply
+ *     to the session's channel. Only `status: "ran"` counts as delivered;
+ *     `skipped` (session busy, cooldown) and `failed` throw so the watcher's
+ *     pending-delivery retry engages.
  *
  * Why not `chat.send`: the Gateway's in-process request seam and the
  * `chat.send` method are reserved for bundled or trusted official plugins
@@ -86,7 +98,19 @@ export class OpenClawNotifier implements Notifier {
       throw new Error(`herdr: host refused the ${status} injection for ${watch.paneId} (key ${idempotencyKey})`);
     }
 
+    this.#queueSystemEvent(watch, status, text, idempotencyKey);
     await this.#runTurn(watch, status);
+  }
+
+  /** Best effort: the injection already carries the text durably. */
+  #queueSystemEvent(watch: WatchRecord, status: SettledStatus, text: string, contextKey: string): void {
+    const enqueue = this.api.runtime?.system?.enqueueSystemEvent;
+    if (!enqueue) return;
+    try {
+      enqueue([RELAY_HEADER, text].join("\n"), { sessionKey: watch.sessionKey, contextKey, replace: true });
+    } catch (error) {
+      this.api.logger.warn?.(`herdr: system event for ${watch.paneId} (${status}) was not queued: ${describe(error)}`);
+    }
   }
 
   /** Runs the turn that makes the message visible. Throws unless it ran. */
@@ -99,8 +123,9 @@ export class OpenClawNotifier implements Notifier {
     }
     let result: HostHeartbeatRunResult;
     try {
+      this.api.logger.info?.(`herdr: waking ${watch.sessionKey} for ${status} ${watch.paneId}`);
       result = await run({
-        reason: `herdr ${status} ${watch.paneId}`,
+        reason: WAKE_REASON,
         sessionKey: watch.sessionKey,
         ...(watch.agentId ? { agentId: watch.agentId } : {}),
         heartbeat: { target: this.#heartbeatTarget },

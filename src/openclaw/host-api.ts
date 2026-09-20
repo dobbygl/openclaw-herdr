@@ -69,6 +69,7 @@ export type HostHeartbeatRunOptions = NonNullable<
   Parameters<OpenClawPluginApi["runtime"]["system"]["runHeartbeatOnce"]>[0]
 >;
 export type HostHeartbeatRunResult = Awaited<ReturnType<OpenClawPluginApi["runtime"]["system"]["runHeartbeatOnce"]>>;
+export type HostSystemEventOptions = Parameters<OpenClawPluginApi["runtime"]["system"]["enqueueSystemEvent"]>[1];
 
 export type HostNextTurnInjection = PluginNextTurnInjection;
 export type HostNextTurnInjectionResult = PluginNextTurnInjectionEnqueueResult;
@@ -102,6 +103,7 @@ export interface HostApi {
   runtime?: {
     system?: {
       runHeartbeatOnce?: (opts?: HostHeartbeatRunOptions) => Promise<HostHeartbeatRunResult>;
+      enqueueSystemEvent?: (text: string, options: HostSystemEventOptions) => boolean;
     };
   };
 }
