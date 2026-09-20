@@ -5,10 +5,15 @@
   "version": "0.1.0",
   "activation": {
     "onStartup": true,
-    "onCommands": ["herdr"]
+    "onCommands": [
+      "herdr"
+    ]
   },
   "commandAliases": [
-    { "name": "herdr", "kind": "runtime-slash" }
+    {
+      "name": "herdr",
+      "kind": "runtime-slash"
+    }
   ],
   "contracts": {
     "tools": [
@@ -20,11 +25,21 @@
     ]
   },
   "toolMetadata": {
-    "herdr_list": { "optional": true },
-    "herdr_send": { "optional": true },
-    "herdr_read": { "optional": true },
-    "herdr_watch": { "optional": true },
-    "herdr_status": { "optional": true }
+    "herdr_list": {
+      "optional": true
+    },
+    "herdr_send": {
+      "optional": true
+    },
+    "herdr_read": {
+      "optional": true
+    },
+    "herdr_watch": {
+      "optional": true
+    },
+    "herdr_status": {
+      "optional": true
+    }
   },
   "configSchema": {
     "type": "object",
@@ -46,14 +61,6 @@
         "type": "number",
         "description": "Lines of pane output included in notifications and /herdr read. Defaults to 40."
       },
-      "openclawBin": {
-        "type": "string",
-        "description": "OpenClaw CLI used for chat.send delivery when no in-process Gateway context is available. Defaults to openclaw on PATH."
-      },
-      "deliveryTimeoutMs": {
-        "type": "number",
-        "description": "Timeout for one watch-result delivery attempt. Defaults to 60000."
-      },
       "herdrBin": {
         "type": "string",
         "description": "herdr executable. Defaults to herdr on PATH."
@@ -72,7 +79,9 @@
           },
           "allowSend": {
             "type": "array",
-            "items": { "type": "string" },
+            "items": {
+              "type": "string"
+            },
             "description": "Machine labels or profile ids (e.g. \"buildbox\") allowed to receive prompts/key presses. Defaults to an empty list."
           }
         }

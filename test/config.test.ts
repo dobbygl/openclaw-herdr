@@ -8,11 +8,9 @@ describe("readPluginConfig", () => {
       requestTimeoutMs: 5_000,
       watchTimeoutMinutes: 720,
       readLines: 40,
-      deliveryTimeoutMs: 60_000,
       remote: { enabled: true, allowSend: [] },
     });
     expect(config).not.toHaveProperty("socketPath");
-    expect(config).not.toHaveProperty("openclawBin");
     expect(config).not.toHaveProperty("herdrBin");
     expect(config).not.toHaveProperty("sshBin");
   });
@@ -23,7 +21,6 @@ describe("readPluginConfig", () => {
       requestTimeoutMs: 5_000,
       watchTimeoutMinutes: 720,
       readLines: 40,
-      deliveryTimeoutMs: 60_000,
       remote: { enabled: true, allowSend: [] },
     });
     expect(config).not.toHaveProperty("herdrBin");
@@ -99,27 +96,21 @@ describe("readPluginConfig", () => {
       socketPath: "/tmp/herdr.sock",
       requestTimeoutMs: 12_345,
       watchTimeoutMinutes: 5,
-      openclawBin: "  /usr/local/bin/openclaw  ",
-      deliveryTimeoutMs: 9_999,
     });
     expect(config.socketPath).toBe("/tmp/herdr.sock");
     expect(config.requestTimeoutMs).toBe(12_345);
     expect(config.watchTimeoutMinutes).toBe(5);
     // `openclawBin`/`socketPath` are passed through verbatim (not trimmed),
     // matching the pre-existing `text()` behavior.
-    expect(config.openclawBin).toBe("  /usr/local/bin/openclaw  ");
-    expect(config.deliveryTimeoutMs).toBe(9_999);
   });
 
   it("falls back to defaults for invalid numeric values", () => {
     const config = readPluginConfig({
       requestTimeoutMs: -1,
       watchTimeoutMinutes: "not-a-number",
-      deliveryTimeoutMs: Number.NaN,
     });
     expect(config.requestTimeoutMs).toBe(5_000);
     expect(config.watchTimeoutMinutes).toBe(720);
-    expect(config.deliveryTimeoutMs).toBe(60_000);
   });
 
   it("still clamps readLines to [1, 400]", () => {

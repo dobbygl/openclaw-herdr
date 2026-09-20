@@ -3,13 +3,6 @@ export interface HerdrPluginConfig {
   requestTimeoutMs: number;
   watchTimeoutMinutes: number;
   readLines: number;
-  /**
-   * `openclaw` executable used to deliver watch results when the in-process
-   * Gateway seam is not available. Resolved from PATH when unset.
-   */
-  openclawBin?: string;
-  /** Budget for one watch-result delivery (`chat.send`), in-process or via the CLI. */
-  deliveryTimeoutMs: number;
   /** `herdr` executable. Resolved from PATH when unset. */
   herdrBin?: string;
   /** `ssh` executable used for remote machine transport. Resolved from PATH when unset. */
@@ -54,7 +47,6 @@ export function readPluginConfig(raw: Record<string, unknown> | undefined): Herd
   };
 
   const socketPath = text("socketPath");
-  const openclawBin = text("openclawBin");
   const herdrBin = trimmedText("herdrBin");
   const sshBin = trimmedText("sshBin");
 
@@ -75,8 +67,6 @@ export function readPluginConfig(raw: Record<string, unknown> | undefined): Herd
     requestTimeoutMs: number("requestTimeoutMs", 5_000),
     watchTimeoutMinutes: number("watchTimeoutMinutes", 720),
     readLines: Math.min(400, Math.max(1, Math.trunc(number("readLines", 40)))),
-    ...(openclawBin ? { openclawBin } : {}),
-    deliveryTimeoutMs: number("deliveryTimeoutMs", 60_000),
     ...(herdrBin ? { herdrBin } : {}),
     ...(sshBin ? { sshBin } : {}),
     remote: {

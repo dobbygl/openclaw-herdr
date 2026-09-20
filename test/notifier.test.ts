@@ -1,28 +1,13 @@
 import { describe, expect, it } from "vitest";
 import type { WatchRecord } from "../src/core/watch-store.js";
-import type { HostApi, HostHeartbeatRequest, HostNextTurnInjection } from "../src/openclaw/host-api.js";
-import { OpenClawNotifier, type DeliveryCommandRunner } from "../src/openclaw/notifier.js";
-
-interface GatewayCall {
-  method: string;
-  params: Record<string, unknown> | undefined;
-  timeoutMs: number | undefined;
-}
-
-interface CommandCall {
-  bin: string;
-  args: readonly string[];
-  timeoutMs: number;
-}
+import type { HostApi, HostHeartbeatRunOptions, HostHeartbeatRunResult, HostNextTurnInjection } from "../src/openclaw/host-api.js";
+import { DeliverySkippedError, OpenClawNotifier } from "../src/openclaw/notifier.js";
 
 interface Fake {
   api: HostApi;
   injections: HostNextTurnInjection[];
-  heartbeats: HostHeartbeatRequest[];
-  gatewayCalls: GatewayCall[];
-  commands: CommandCall[];
+  runs: HostHeartbeatRunOptions[];
   logs: string[];
-  runCommand: DeliveryCommandRunner;
 }
 
 function fakeHost(
@@ -30,23 +15,13 @@ function fakeHost(
     enqueued?: boolean;
     /** Emulates a dedupe hit: `enqueued: false` carrying the existing id. */
     duplicateId?: string;
-    heartbeat?: boolean;
-    /** `undefined` means the host exposes no in-process Gateway seam at all. */
-    gatewayAvailable?: boolean;
-    gatewayThrows?: boolean;
-    exitCode?: number | null;
+    /** `undefined` means the host exposes no heartbeat runtime at all. */
+    result?: HostHeartbeatRunResult | "throw";
   } = {},
 ): Fake {
   const injections: HostNextTurnInjection[] = [];
-  const heartbeats: HostHeartbeatRequest[] = [];
-  const gatewayCalls: GatewayCall[] = [];
-  const commands: CommandCall[] = [];
+  const runs: HostHeartbeatRunOptions[] = [];
   const logs: string[] = [];
-  const runCommand: DeliveryCommandRunner = async (bin, args, opts) => {
-    commands.push({ bin, args, timeoutMs: opts.timeoutMs });
-    const code = options.exitCode === undefined ? 0 : options.exitCode;
-    return { code, stdout: code === 0 ? '{"status":"started"}' : "", stderr: code === 0 ? "" : "gateway unreachable" };
-  };
   const api: HostApi = {
     logger: {
       info: (message) => logs.push(`info: ${message}`),
@@ -66,30 +41,24 @@ function fakeHost(
         },
       },
     },
-    runtime: {
-      ...(options.heartbeat === false
-        ? {}
-        : { system: { requestHeartbeat: (opts: HostHeartbeatRequest) => void heartbeats.push(opts) } }),
-      ...(options.gatewayAvailable === undefined
-        ? {}
-        : {
-            gateway: {
-              isAvailable: async () => options.gatewayAvailable === true,
-              request: async <T>(method: string, params?: Record<string, unknown>, opts?: { timeoutMs?: number }) => {
-                gatewayCalls.push({ method, params, timeoutMs: opts?.timeoutMs });
-                if (options.gatewayThrows) throw new Error("gateway refused");
-                return { status: "started" } as T;
+    ...(options.result === undefined
+      ? {}
+      : {
+          runtime: {
+            system: {
+              runHeartbeatOnce: async (opts?: HostHeartbeatRunOptions) => {
+                runs.push(opts ?? {});
+                if (options.result === "throw") throw new Error("heartbeat runtime exploded");
+                return options.result as HostHeartbeatRunResult;
               },
             },
-          }),
-    },
+          },
+        }),
   };
-  return { api, injections, heartbeats, gatewayCalls, commands, logs, runCommand };
+  return { api, injections, runs, logs };
 }
 
-function notifier(host: Fake, deliveryTimeoutMs = 60_000): OpenClawNotifier {
-  return new OpenClawNotifier(host.api, { openclawBin: "openclaw-test", deliveryTimeoutMs, runCommand: host.runCommand });
-}
+const ran: HostHeartbeatRunResult = { status: "ran", durationMs: 1234 };
 
 const watch: WatchRecord = {
   id: "w-1",
@@ -109,112 +78,78 @@ const watch: WatchRecord = {
 };
 
 describe("OpenClawNotifier", () => {
-  it("keys the injection by watch, status and event sequence", async () => {
-    const host = fakeHost();
-    const notify = notifier(host);
+  it("queues the event in the originating session, keyed by watch, status and sequence", async () => {
+    const host = fakeHost({ result: ran });
+    const notify = new OpenClawNotifier(host.api);
     await notify.notify({ ...watch, notificationSeq: 3 } as WatchRecord, "blocked", "needs your input");
     await notify.notify({ ...watch, notificationSeq: 4 } as WatchRecord, "blocked", "needs your input again");
-    expect(host.injections.map((injection) => injection.idempotencyKey)).toEqual([
-      "herdr:w-1:blocked:3",
-      "herdr:w-1:blocked:4",
-    ]);
+    expect(host.injections.map((i) => i.idempotencyKey)).toEqual(["herdr:w-1:blocked:3", "herdr:w-1:blocked:4"]);
     expect(host.injections[0]?.sessionKey).toBe("agent:main:telegram:1");
     expect(host.injections[0]?.agentId).toBe("main");
-    expect(host.injections[0]?.placement).toBe("append_context");
+    expect(host.injections[0]?.text).toContain("[Herdr watch event]");
     expect(host.injections[0]?.text).toContain("needs your input");
-    expect(host.injections[0]?.text).toContain("queued copy");
   });
 
   it("falls back to sequence 0 when the watch has none", async () => {
-    const host = fakeHost();
-    await notifier(host).notify(watch, "idle", "finished");
+    const host = fakeHost({ result: ran });
+    const { notificationSeq: _drop, ...bare } = watch;
+    await new OpenClawNotifier(host.api).notify(bare as WatchRecord, "idle", "done");
     expect(host.injections[0]?.idempotencyKey).toBe("herdr:w-1:idle:0");
   });
 
-  it("delivers through the in-process Gateway when one is active", async () => {
-    const host = fakeHost({ gatewayAvailable: true });
-    await notifier(host, 30_000).notify(watch, "done", "finished");
-    expect(host.commands).toEqual([]);
-    expect(host.gatewayCalls).toHaveLength(1);
-    expect(host.gatewayCalls[0]?.method).toBe("chat.send");
-    expect(host.gatewayCalls[0]?.timeoutMs).toBe(30_000);
-    expect(host.gatewayCalls[0]?.params).toMatchObject({
+  it("runs one heartbeat turn in that session and counts `ran` as delivered", async () => {
+    const host = fakeHost({ result: ran });
+    await new OpenClawNotifier(host.api).notify(watch, "idle", "finished");
+    expect(host.runs).toHaveLength(1);
+    expect(host.runs[0]).toEqual({
+      reason: "herdr idle w6:p1",
       sessionKey: "agent:main:telegram:1",
       agentId: "main",
-      deliver: true,
-      idempotencyKey: "herdr:w-1:done:0:send",
+      heartbeat: { target: "last" },
     });
-    expect(String(host.gatewayCalls[0]?.params?.message)).toContain("finished");
+    expect(host.logs.some((l) => l.includes("delivered idle for w6:p1"))).toBe(true);
   });
 
-  it("spawns the openclaw CLI when no Gateway request context is active", async () => {
-    const host = fakeHost({ gatewayAvailable: false });
-    await notifier(host, 20_000).notify(watch, "idle", "finished");
-    expect(host.gatewayCalls).toEqual([]);
-    expect(host.commands).toHaveLength(1);
-    const call = host.commands[0];
-    expect(call?.bin).toBe("openclaw-test");
-    expect(call?.args.slice(0, 4)).toEqual(["gateway", "call", "chat.send", "--params"]);
-    expect(call?.args).toContain("--json");
-    expect(call?.args[call.args.length - 1]).toBe("20000");
-    expect(call && call.timeoutMs).toBe(25_000);
-    const params = JSON.parse(String(call?.args[4])) as Record<string, unknown>;
-    expect(params).toMatchObject({
-      sessionKey: "agent:main:telegram:1",
-      agentId: "main",
-      deliver: true,
-      idempotencyKey: "herdr:w-1:idle:0:send",
-    });
-    expect(String(params.message)).toContain("Relay the following to the user as-is");
+  it("honours a configured heartbeat target", async () => {
+    const host = fakeHost({ result: ran });
+    await new OpenClawNotifier(host.api, { heartbeatTarget: "telegram" }).notify(watch, "idle", "x");
+    expect(host.runs[0]?.heartbeat).toEqual({ target: "telegram" });
   });
 
-  it("uses the CLI when the host exposes no Gateway seam", async () => {
+  it("throws a retryable error when the turn was skipped, carrying retryAtMs", async () => {
+    const host = fakeHost({ result: { status: "skipped", reason: "session busy", retryAtMs: 99 } });
+    const error = await new OpenClawNotifier(host.api).notify(watch, "idle", "x").catch((e: unknown) => e);
+    expect(error).toBeInstanceOf(DeliverySkippedError);
+    expect((error as DeliverySkippedError).retryAtMs).toBe(99);
+    expect((error as Error).message).toContain("session busy");
+  });
+
+  it("throws when the turn failed, so the watcher retries", async () => {
+    const host = fakeHost({ result: { status: "failed", reason: "model unavailable" } });
+    await expect(new OpenClawNotifier(host.api).notify(watch, "idle", "x")).rejects.toThrow(/model unavailable/u);
+  });
+
+  it("throws when the heartbeat runtime itself throws", async () => {
+    const host = fakeHost({ result: "throw" });
+    await expect(new OpenClawNotifier(host.api).notify(watch, "idle", "x")).rejects.toThrow(/exploded/u);
+  });
+
+  it("throws, after queueing, when the host has no heartbeat runtime", async () => {
     const host = fakeHost();
-    await notifier(host).notify(watch, "idle", "finished");
-    expect(host.commands).toHaveLength(1);
+    await expect(new OpenClawNotifier(host.api).notify(watch, "idle", "x")).rejects.toThrow(/runHeartbeatOnce/u);
+    expect(host.injections).toHaveLength(1);
   });
 
-  it("throws when the CLI delivery fails, so the watcher retries", async () => {
-    const host = fakeHost({ exitCode: 3 });
-    await expect(notifier(host).notify(watch, "idle", "finished")).rejects.toThrow(/exited 3/u);
-    expect(host.heartbeats).toHaveLength(0);
+  it("still runs the turn when the key was already queued, so a retry completes", async () => {
+    const host = fakeHost({ enqueued: false, duplicateId: "inj-old", result: ran });
+    await new OpenClawNotifier(host.api).notify(watch, "idle", "x");
+    expect(host.runs).toHaveLength(1);
+    expect(host.logs.some((l) => l.includes("already queued"))).toBe(true);
   });
 
-  it("throws when the in-process delivery fails", async () => {
-    const host = fakeHost({ gatewayAvailable: true, gatewayThrows: true });
-    await expect(notifier(host).notify(watch, "idle", "finished")).rejects.toThrow(/gateway refused/u);
-  });
-
-  it("always asks for a heartbeat after delivering", async () => {
-    const host = fakeHost();
-    await notifier(host).notify(watch, "done", "finished");
-    expect(host.heartbeats).toHaveLength(1);
-    expect(host.heartbeats[0]?.source).toBe("other");
-    expect(host.heartbeats[0]?.intent).toBe("event");
-    expect(host.heartbeats[0]?.sessionKey).toBe("agent:main:telegram:1");
-    expect(host.heartbeats[0]?.agentId).toBe("main");
-  });
-
-  it("warns when the host has no heartbeat seam", async () => {
-    const host = fakeHost({ heartbeat: false });
-    await notifier(host).notify(watch, "done", "finished");
-    expect(host.commands).toHaveLength(1);
-    expect(host.logs.some((line) => line.startsWith("warn:") && line.includes("requestHeartbeat"))).toBe(true);
-  });
-
-  it("still delivers when the key was already queued, so a retry completes", async () => {
-    const host = fakeHost({ enqueued: false, duplicateId: "inj-existing" });
-    await notifier(host).notify(watch, "idle", "finished");
-    expect(host.commands).toHaveLength(1);
-    expect(host.heartbeats).toHaveLength(1);
-    expect(host.logs.some((line) => line.includes("already queued"))).toBe(true);
-  });
-
-  it("throws when the host dropped the injection outright, and delivers nothing", async () => {
-    const host = fakeHost({ enqueued: false });
-    await expect(notifier(host).notify(watch, "idle", "finished")).rejects.toThrow(/refused/u);
-    expect(host.commands).toEqual([]);
-    expect(host.gatewayCalls).toEqual([]);
-    expect(host.heartbeats).toHaveLength(0);
+  it("throws when the host dropped the injection outright, and runs nothing", async () => {
+    const host = fakeHost({ enqueued: false, result: ran });
+    await expect(new OpenClawNotifier(host.api).notify(watch, "idle", "x")).rejects.toThrow(/refused/u);
+    expect(host.runs).toHaveLength(0);
   });
 });

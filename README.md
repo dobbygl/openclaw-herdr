@@ -19,7 +19,7 @@
 It replaces screen scraping with Herdr's own agent lifecycle API, so it does not care which version of Herdr, Claude Code or Codex you run today.
 
 > [!NOTE]
-> Status: prototype under live testing. `/herdr list`, `/herdr status`, `/herdr read` and `/herdr <pane>: <prompt>` are verified from Telegram against a real Gateway (milestone M1.5); the first live run showed that queued context plus a heartbeat does not reach the chat on its own, so notifications now run a `chat.send` turn, and that retest is next. Remote machines (milestone M2.5 — discovery, the `selector@server` grammar, the SSH stdio transport, `remote.allowSend`) are implemented but not yet exercised live against a saved machine. See [docs/PLAN.md](docs/PLAN.md).
+> Status: prototype under live testing. `/herdr list`, `/herdr status`, `/herdr read` and `/herdr <pane>: <prompt>` are verified from Telegram against a real Gateway (milestone M1.5); two delivery mechanisms were disproved live (a bare heartbeat wake, then `chat.send`, which the Gateway reserves for official plugins), so notifications now run a heartbeat turn in the originating session, and that retest is next. Remote machines (milestone M2.5 — discovery, the `selector@server` grammar, the SSH stdio transport, `remote.allowSend`) are implemented but not yet exercised live against a saved machine. See [docs/PLAN.md](docs/PLAN.md).
 
 ## Features
 
@@ -153,7 +153,7 @@ Telegram / WebChat ──► OpenClaw Gateway ──(in-process)──► opencl
 1. `/herdr …` is parsed into a small command; the target is resolved against a fresh `agent.list`.
 2. Prompts go through `agent.prompt`. Herdr refuses with `agent_blocked` if the agent is at a prompt, before any input is sent.
 3. A watch record is stored and a `pane.agent_status_changed` subscription is opened for that pane.
-4. On `idle | done | blocked` the plugin confirms with `agent.get` (same occupant, `state_change_seq` advanced), reads the last lines, stores a pending delivery, then runs a chat turn in the originating session through the Gateway `chat.send` method with `deliver: true`. A next-turn injection is kept as durable context and a heartbeat is requested as a best-effort extra. Failed deliveries are retried until the watch deadline.
+4. On `idle | done | blocked` the plugin confirms with `agent.get` (same occupant, `state_change_seq` advanced), reads the last lines, stores a pending delivery, queues the event as durable context in the originating session and runs one heartbeat turn there right away (`runHeartbeatOnce`), which relays the message to the session's channel. A skipped or failed turn is retried until the watch deadline.
 5. Several chats may watch the same pane; each gets its own notification and `unwatch` only removes the caller's watch.
 6. A `@server` target talks to that machine's socket the same way, except the JSON lines travel over `ssh <target> socat - UNIX-CONNECT:<sock>` instead of the local socket. SSH's own `ControlMaster` multiplexing keeps one authenticated session per machine warm, so only the first call pays for a fresh handshake — measured ≈0.6 s per request there afterwards, against 6–12 s through Herdr's own `herdr --machine`.
 
@@ -168,8 +168,6 @@ Optional keys under `plugins.entries.herdr.config` in `openclaw.json`:
 | `socketPath` | `$HERDR_SOCKET_PATH` or `~/.config/herdr/herdr.sock` | Local Herdr server socket |
 | `requestTimeoutMs` | `5000` | Timeout per **local** Herdr request; remote requests use their own, larger fixed budget |
 | `watchTimeoutMinutes` | `720` | Ceiling for a watch that never settles; undelivered notifications are retried until then |
-| `openclawBin` | `openclaw` on `PATH` | OpenClaw CLI used for `chat.send` delivery when no in-process Gateway context is available |
-| `deliveryTimeoutMs` | `60000` | Timeout for one delivery attempt |
 | `readLines` | `40` | Lines of pane output included in notifications and `/herdr read` |
 | `herdrBin` | `herdr` on `PATH` | `herdr` executable used to list saved machines (`herdr machine list --json`) and resolve their sockets |
 | `sshBin` | `ssh` on `PATH` | `ssh` executable used to reach remote machines |

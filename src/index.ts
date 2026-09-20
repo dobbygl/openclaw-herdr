@@ -8,10 +8,7 @@ import { registerHerdrTools } from "./openclaw/tools.js";
 
 export function registerHerdrPlugin(api: HostApi): HerdrRuntime {
   const config = readPluginConfig(api.pluginConfig);
-  const notifier = new OpenClawNotifier(api, {
-    ...(config.openclawBin ? { openclawBin: config.openclawBin } : {}),
-    deliveryTimeoutMs: config.deliveryTimeoutMs,
-  });
+  const notifier = new OpenClawNotifier(api);
   const runtime = new HerdrRuntime(config, notifier, api.logger);
   api.registerService({
     id: "herdr-watcher",

@@ -64,10 +64,11 @@ export interface HostServiceContext {
   logger: HostLogger;
 }
 
-/** Wake request for `runtime.system.requestHeartbeat`, derived from the host. */
-export type HostHeartbeatRequest = Parameters<
-  NonNullable<OpenClawPluginApi["runtime"]["system"]["requestHeartbeat"]>
->[0];
+/** Options and result of `runtime.system.runHeartbeatOnce`, derived from the host. */
+export type HostHeartbeatRunOptions = NonNullable<
+  Parameters<OpenClawPluginApi["runtime"]["system"]["runHeartbeatOnce"]>[0]
+>;
+export type HostHeartbeatRunResult = Awaited<ReturnType<OpenClawPluginApi["runtime"]["system"]["runHeartbeatOnce"]>>;
 
 export type HostNextTurnInjection = PluginNextTurnInjection;
 export type HostNextTurnInjectionResult = PluginNextTurnInjectionEnqueueResult;
@@ -95,21 +96,15 @@ export interface HostApi {
     };
   };
   /**
-   * Optional on purpose: older hosts and test fakes may not expose these, and
-   * the notifier has to keep working (loudly) without them - it falls back to
-   * the `openclaw` CLI when the in-process Gateway seam is unavailable.
+   * Optional on purpose: older hosts and test fakes may not expose it, and the
+   * notifier must fail loudly (and retry) rather than crash without it.
    */
   runtime?: {
     system?: {
-      requestHeartbeat?: (opts: HostHeartbeatRequest) => void;
+      runHeartbeatOnce?: (opts?: HostHeartbeatRunOptions) => Promise<HostHeartbeatRunResult>;
     };
-    /** Trusted in-process Gateway dispatch; `isAvailable()` gates `request()`. */
-    gateway?: HostGateway;
   };
 }
-
-/** Exactly the two members we use, so a fake is two functions. */
-export type HostGateway = Pick<OpenClawPluginApi["runtime"]["gateway"], "isAvailable" | "request">;
 
 type Assert<T extends true> = T;
 
