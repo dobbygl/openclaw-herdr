@@ -1,6 +1,8 @@
 import type { AgentInfo, AgentStatus } from "../herdr/types.js";
 import { compactPaneText, DEFAULT_MAX_CHARS, DEFAULT_MAX_LINE_CHARS } from "./compact.js";
-import type { SettledStatus, WatchRecord } from "./watch-store.js";
+import { formatTargetRef } from "./parse.js";
+import { LOCAL_SERVER_ID } from "./servers.js";
+import { samePane, type SettledStatus, type WatchRecord } from "./watch-store.js";
 
 const STATUS_ICON: Record<AgentStatus, string> = {
   idle: "○",
@@ -25,20 +27,87 @@ export interface PaneBlockOptions {
   maxLineChars?: number;
 }
 
-export function formatAgentLine(agent: AgentInfo): string {
+/**
+ * One agent as a chat line. `ref` is what the operator can copy back into a
+ * command: the bare pane id locally, `w1:p1@buildbox` on a machine.
+ */
+export function formatAgentLine(agent: AgentInfo, ref: string = agent.pane_id): string {
   const raw = agent.name ? `${agent.name} (${agent.agent ?? "?"})` : (agent.agent ?? "no agent");
   const label = preview(raw, LABEL_MAX_CHARS);
   const cwd = agent.foreground_cwd ?? agent.cwd ?? "";
   const title = agent.terminal_title_stripped ? ` — ${preview(agent.terminal_title_stripped, TITLE_MAX_CHARS)}` : "";
-  return `${STATUS_ICON[agent.agent_status] ?? "?"} **${agent.pane_id}** ${label} · ${agent.agent_status}${title}${cwd ? `\n   ${shortenPath(cwd)}` : ""}`;
+  return `${STATUS_ICON[agent.agent_status] ?? "?"} **${ref}** ${label} · ${agent.agent_status}${title}${cwd ? `\n   ${shortenPath(cwd)}` : ""}`;
 }
 
-export function formatAgentList(agents: AgentInfo[], watches: WatchRecord[]): string {
+/** The agents of one server. Local-only; {@link formatServerList} groups several. */
+export function formatAgentList(agents: AgentInfo[], watches: WatchRecord[], serverId = LOCAL_SERVER_ID): string {
   const live = agents.filter((agent) => agent.agent !== null);
   if (live.length === 0) return "Herdr sees no running coding agent. Start claude or codex inside a Herdr pane.";
-  const watched = new Set(watches.map((watch) => watch.paneId));
-  const lines = live.map((agent) => formatAgentLine(agent) + (watched.has(agent.pane_id) ? "\n   watching" : ""));
-  return ["Herdr agents:", ...lines].join("\n");
+  return ["Herdr agents:", ...agentLines(live, watches, serverId, undefined)].join("\n");
+}
+
+/**
+ * One server in `/herdr list`: its agents, or why they cannot be listed.
+ * `down` is a short reason (`ssh authentication failed`), never a stack.
+ */
+export interface ServerGroup {
+  id: string;
+  label: string;
+  isLocal: boolean;
+  /** Undefined when the server could not be asked. */
+  agents?: AgentInfo[];
+  down?: string;
+}
+
+/**
+ * `/herdr list` across servers: this host first, then one group header per
+ * machine (`Machine buildbox:`) with copyable qualified refs. A machine that
+ * cannot be pinged is one line with its reason, so the list still works when
+ * half the herd is asleep.
+ */
+export function formatServerList(groups: ServerGroup[], watches: WatchRecord[], note?: string): string {
+  const lines: string[] = [];
+  const onlyLocal = groups.length === 1 && groups[0]?.isLocal === true;
+  for (const group of groups) {
+    const live = (group.agents ?? []).filter((agent) => agent.agent !== null);
+    if (group.isLocal) {
+      if (group.down) {
+        // The local server is the plugin's floor: say what to check, not `down`.
+        lines.push(`Cannot reach Herdr: ${group.down}. Is the Herdr server running?`);
+        continue;
+      }
+      if (live.length === 0 && onlyLocal) {
+        lines.push("Herdr sees no running coding agent. Start claude or codex inside a Herdr pane.");
+        continue;
+      }
+      lines.push("Herdr agents:");
+      if (live.length === 0) lines.push("no agent on this host");
+      else lines.push(...agentLines(live, watches, group.id, undefined));
+      continue;
+    }
+    if (group.down) {
+      lines.push(`Machine ${group.label}: down — ${group.down}`);
+      continue;
+    }
+    lines.push(`Machine ${group.label}:`);
+    if (live.length === 0) lines.push("no agent there");
+    else lines.push(...agentLines(live, watches, group.id, group.label));
+  }
+  if (note) lines.push(note);
+  return lines.join("\n");
+}
+
+function agentLines(
+  live: AgentInfo[],
+  watches: WatchRecord[],
+  serverId: string,
+  suffix: string | undefined,
+): string[] {
+  return live.map((agent) => {
+    const ref = formatTargetRef(agent.pane_id, suffix);
+    const watched = watches.some((watch) => samePane(watch, { serverId, paneId: agent.pane_id }));
+    return formatAgentLine(agent, ref) + (watched ? "\n   watching" : "");
+  });
 }
 
 /**
@@ -49,26 +118,41 @@ export function formatAgentList(agents: AgentInfo[], watches: WatchRecord[]): st
  */
 export type SendTracking = "watching" | "off" | "tracking_failed";
 
-export function formatSendAccepted(agent: AgentInfo, text: string, tracking: SendTracking): string {
+export function formatSendAccepted(
+  agent: AgentInfo,
+  text: string,
+  tracking: SendTracking,
+  ref: string = agent.pane_id,
+): string {
   const note =
     tracking === "watching"
       ? "I will tell you when it finishes or needs input."
       : tracking === "off"
         ? "Not watching; use /herdr status to check."
         : "It was delivered, but I could not set up the watch, so I will not be able to tell you when it finishes; use /herdr status.";
-  return [`Sent to **${agent.pane_id}** (${preview(agent.name ?? agent.agent ?? "?", LABEL_MAX_CHARS)}).`, note, `> ${preview(text)}`].join("\n");
+  return [`Sent to **${ref}** (${preview(agent.name ?? agent.agent ?? "?", LABEL_MAX_CHARS)}).`, note, `> ${preview(text)}`].join("\n");
 }
 
-export function formatStatus(agent: AgentInfo, tail: string | undefined, watch: WatchRecord | undefined): string {
-  const lines = [formatAgentLine(agent)];
+export function formatStatus(
+  agent: AgentInfo,
+  tail: string | undefined,
+  watch: WatchRecord | undefined,
+  ref: string = agent.pane_id,
+): string {
+  const lines = [formatAgentLine(agent, ref)];
   if (watch) lines.push(`watching since ${watch.createdAt}`);
   const block = tail ? trimTail(tail, 14) : "";
   if (block) lines.push("", block);
   return lines.join("\n");
 }
 
-export function formatNotification(watch: WatchRecord, status: SettledStatus, tail: string | undefined): string {
-  const who = `**${watch.paneId}** (${watch.agentLabel})`;
+export function formatNotification(
+  watch: WatchRecord,
+  status: SettledStatus,
+  tail: string | undefined,
+  ref: string = watch.paneId,
+): string {
+  const who = `**${ref}** (${watch.agentLabel})`;
   const headline =
     status === "blocked"
       ? `Herdr: ${who} needs your input.`
@@ -88,7 +172,7 @@ export function formatNotification(watch: WatchRecord, status: SettledStatus, ta
     parts.push(
       "",
       "Answer it in the terminal (Herdr or Collie): I cannot answer a prompt for you while the agent is blocked.",
-      `/herdr read ${watch.paneId} shows the prompt again. Answering from chat is not implemented yet.`,
+      `/herdr read ${ref} shows the prompt again. Answering from chat is not implemented yet.`,
     );
   }
   return parts.join("\n");

@@ -22,7 +22,8 @@ async function guarded(run: () => Promise<string>): Promise<HostToolResult> {
 }
 
 const TargetParam = Type.String({
-  description: "Herdr pane id (w6:p1), agent name, or agent kind when unique (claude, codex).",
+  description:
+    "Herdr pane id (w6:p1), agent name, or agent kind when unique (claude, codex). Add @machine for a saved Herdr machine: w6:p1@buildbox. No suffix means this host.",
 });
 
 export function registerHerdrTools(api: HostApi, runtime: HerdrRuntime): void {
@@ -30,7 +31,8 @@ export function registerHerdrTools(api: HostApi, runtime: HerdrRuntime): void {
     () => ({
       name: "herdr_list",
       label: "Herdr: list agents",
-      description: "List the coding agents Herdr currently sees, with pane id, kind, state and working directory.",
+      description:
+        "List the coding agents Herdr currently sees, with pane id, kind, state and working directory. Local agents first, then one group per saved Herdr machine (refs like w1:p1@buildbox); a machine that cannot be reached is shown as down.",
       parameters: Type.Object({}, { additionalProperties: false }),
       execute: () => guarded(() => runtime.list()),
     }),
@@ -38,7 +40,7 @@ export function registerHerdrTools(api: HostApi, runtime: HerdrRuntime): void {
       name: "herdr_send",
       label: "Herdr: send prompt",
       description:
-        "Send a prompt to one coding agent running in Herdr and watch it. Returns immediately; a '[Herdr watch event]' arrives when the agent finishes or needs input. Refuses if the agent is blocked at a prompt.",
+        "Send a prompt to one coding agent running in Herdr and watch it. Returns immediately; a '[Herdr watch event]' arrives when the agent finishes or needs input. Refuses if the agent is blocked at a prompt, or if the target machine is not in the plugin's remote.allowSend list.",
       parameters: Type.Object(
         {
           target: Type.Optional(TargetParam),

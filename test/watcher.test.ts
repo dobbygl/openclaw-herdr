@@ -5,7 +5,10 @@ import { afterEach, beforeEach, describe, expect, it } from "vitest";
 import type { Subscription } from "../src/herdr/client.js";
 import type { AgentInfo, PaneReadResult, SubscriptionEvent, SubscriptionSpec } from "../src/herdr/types.js";
 import { WatchStore, type WatchRecord } from "../src/core/watch-store.js";
+import { LOCAL_SERVER_ID } from "../src/core/servers.js";
 import { HerdrWatcher, type Notifier, type SettledStatus, type WatcherClient } from "../src/core/watcher.js";
+
+const LOCAL_PANE = { serverId: LOCAL_SERVER_ID, paneId: "w1:p1" };
 
 interface FakeSubscription {
   id: number;
@@ -196,9 +199,10 @@ afterEach(async () => {
   dirs = [];
 });
 
-function startWatch(options: { sessionKey?: string; agent?: Partial<AgentInfo> } = {}) {
+function startWatch(options: { sessionKey?: string; agent?: Partial<AgentInfo>; serverId?: string } = {}) {
   return watcher.watch({
     agent: { ...baseAgent, ...options.agent },
+    ...(options.serverId !== undefined ? { serverId: options.serverId } : {}),
     sessionKey: options.sessionKey ?? "s1",
     promptPreview: "run the tests",
     timeoutMinutes: 10,
@@ -490,11 +494,11 @@ describe("HerdrWatcher subscriptions", () => {
   it("unwatch only removes the caller's own watch", async () => {
     await startWatch({ sessionKey: "s1" });
     await startWatch({ sessionKey: "s2" });
-    expect(await watcher.unwatch("w1:p1", "s1")).toBe(1);
+    expect(await watcher.unwatch(LOCAL_PANE, "s1")).toBe(1);
     expect(store.list().map((w) => w.sessionKey)).toEqual(["s2"]);
     expect(client.open("w1:p1")).toHaveLength(1);
-    expect(await watcher.unwatch("w1:p1", "s1")).toBe(0);
-    expect(await watcher.unwatch("w1:p1")).toBe(1);
+    expect(await watcher.unwatch(LOCAL_PANE, "s1")).toBe(0);
+    expect(await watcher.unwatch(LOCAL_PANE)).toBe(1);
     expect(client.open("w1:p1")).toHaveLength(0);
   });
 
@@ -568,5 +572,126 @@ describe("HerdrWatcher subscriptions", () => {
     client.emit("w1:p1", "idle");
     await settle();
     expect(notifier.calls).toHaveLength(1);
+  });
+});
+
+/**
+ * One watcher, several Herdr servers. The pane id is the same on both, which is
+ * the whole point: nothing may be attributed to the wrong machine, and a
+ * machine that is not answering must keep its watches pending.
+ */
+describe("HerdrWatcher servers", () => {
+  const BUILDBOX = "abc123";
+  const remoteAgent: AgentInfo = { ...baseAgent, terminal_id: "term_r" };
+  let remote: FakeClient;
+  let unreachable: Set<string>;
+  let serverErrors: Array<{ serverId: string; reason: string }>;
+
+  async function makeMultiServerWatcher(): Promise<void> {
+    await watcher.stop();
+    watcher = new HerdrWatcher(
+      (serverId) => {
+        if (unreachable.has(serverId)) return undefined;
+        return serverId === BUILDBOX ? remote : client;
+      },
+      store,
+      notifier,
+      logger,
+      {
+        sweepIntervalMs: 3_600_000,
+        subscribeAckTimeoutMs: 0,
+        reconnectDelayMs: 0,
+        deliveryBackoffMs: [1_000],
+        serverLabel: (serverId) => (serverId === BUILDBOX ? "buildbox" : undefined),
+        onServerError: (serverId, reason) => void serverErrors.push({ serverId, reason }),
+        now,
+      },
+    );
+    await watcher.start();
+  }
+
+  beforeEach(async () => {
+    remote = new FakeClient(remoteAgent);
+    unreachable = new Set<string>();
+    serverErrors = [];
+    await makeMultiServerWatcher();
+  });
+
+  it("keeps the same pane id on two servers apart", async () => {
+    await startWatch();
+    await startWatch({ serverId: BUILDBOX, agent: remoteAgent });
+    expect(store.list().map((w) => w.serverId).sort()).toEqual([BUILDBOX, "local"]);
+    expect(client.open("w1:p1")).toHaveLength(1);
+    expect(remote.open("w1:p1")).toHaveLength(1);
+
+    // Only the local pane finishes: the remote watch is untouched.
+    client.setAgent("w1:p1", { agent_status: "idle", state_change_seq: 11 });
+    client.emit("w1:p1", "idle");
+    await settle();
+    expect(notifier.calls).toHaveLength(1);
+    expect(notifier.calls[0]?.text).toContain("**w1:p1**");
+    expect(notifier.calls[0]?.text).not.toContain("@buildbox");
+    expect(store.list().map((w) => w.serverId)).toEqual([BUILDBOX]);
+    expect(remote.open("w1:p1")).toHaveLength(1);
+  });
+
+  it("notifies a remote watch with the qualified ref", async () => {
+    await startWatch({ serverId: BUILDBOX, agent: remoteAgent });
+    remote.setAgent("w1:p1", { agent_status: "done", state_change_seq: 11 });
+    remote.emit("w1:p1", "done");
+    await settle();
+    expect(notifier.statuses()).toEqual(["done"]);
+    expect(notifier.calls[0]?.text).toContain("**w1:p1@buildbox**");
+    expect(store.list()).toHaveLength(0);
+  });
+
+  it("scopes unwatch to one server", async () => {
+    await startWatch();
+    await startWatch({ serverId: BUILDBOX, agent: remoteAgent });
+    expect(await watcher.unwatch({ serverId: BUILDBOX, paneId: "w1:p1" }, "s1")).toBe(1);
+    expect(store.list().map((w) => w.serverId)).toEqual(["local"]);
+    expect(remote.open("w1:p1")).toHaveLength(0);
+    expect(client.open("w1:p1")).toHaveLength(1);
+    expect(await watcher.unwatch(LOCAL_PANE, "s1")).toBe(1);
+    expect(store.list()).toHaveLength(0);
+  });
+
+  it("keeps a watch pending while its machine is down, then settles when it answers", async () => {
+    // The watch was stored while the machine was up; now it is not answering.
+    unreachable.add(BUILDBOX);
+    await store.add({
+      serverId: BUILDBOX,
+      paneId: "w1:p1",
+      terminalId: "term_r",
+      agentLabel: "claude",
+      sessionKey: "s9",
+      promptPreview: "run the tests",
+      deadlineAt: new Date(clock.getTime() + 600_000).toISOString(),
+      seqAtStart: 10,
+      lastStatus: "working",
+      sawWorking: true,
+    });
+    await makeMultiServerWatcher();
+    await settle();
+    expect(notifier.calls).toHaveLength(0);
+    expect(store.list()).toHaveLength(1);
+    expect(remote.subscriptions).toHaveLength(0);
+    expect(serverErrors.map((e) => e.serverId)).toContain(BUILDBOX);
+    expect(logs.some((line) => line.includes("w1:p1@buildbox") && line.includes("not reachable"))).toBe(true);
+
+    // It comes back: the resubscribe reconciles and only now does it settle.
+    remote.setAgent("w1:p1", { agent_status: "idle", state_change_seq: 12 });
+    unreachable.delete(BUILDBOX);
+    await settle();
+    expect(notifier.statuses()).toEqual(["idle"]);
+    expect(notifier.calls[0]?.text).toContain("**w1:p1@buildbox**");
+    expect(store.list()).toHaveLength(0);
+  });
+
+  it("refuses to register a watch on a machine it cannot reach", async () => {
+    unreachable.add(BUILDBOX);
+    await expect(startWatch({ serverId: BUILDBOX, agent: remoteAgent })).rejects.toThrow(/buildbox is not reachable/u);
+    // Nothing half-registered.
+    expect(store.list()).toHaveLength(0);
   });
 });

@@ -1,9 +1,12 @@
 import type { HerdrClient, Subscription } from "../herdr/client.js";
 import type { AgentInfo, AgentStatus, SubscriptionEvent } from "../herdr/types.js";
 import { formatNotification } from "./format.js";
+import { formatTargetRef } from "./parse.js";
+import { LOCAL_SERVER_ID } from "./servers.js";
 import {
   isTerminalSettledStatus,
   type PendingDelivery,
+  type PaneRef,
   type SettledStatus,
   type WatchPatch,
   type WatchRecord,
@@ -26,6 +29,19 @@ export interface WatcherLogger {
 export type WatcherClient = Pick<HerdrClient, "subscribe" | "readAgent" | "getAgent">;
 
 /**
+ * Picks the client for one server. It is deliberately **synchronous**: a
+ * subscription must be registered without an `await` in the middle, or `stop()`
+ * and a replacing `watch()` could run in the gap. A server whose client is not
+ * built yet (a remote machine whose socket path is still being resolved, or one
+ * that is down) answers `undefined`, which the watcher treats exactly like a
+ * dropped connection: retry with backoff, settle nothing.
+ */
+export type WatcherClientResolver = (serverId: string) => WatcherClient | undefined;
+
+/** A single client (every watch is local) or one resolver per server. */
+export type WatcherClients = WatcherClient | WatcherClientResolver;
+
+/**
  * A `Subscription` that may expose an acknowledgement promise. `client.ts` can
  * add `ready` (resolved when Herdr answers `subscription_started`); until it
  * does, the watcher approximates it with "first event received, or a short ack
@@ -35,17 +51,35 @@ export type MaybeReadySubscription = Subscription & { ready?: Promise<void> };
 
 export interface WatcherOptions {
   readLines?: number;
+  /** First resubscribe delay; it doubles per consecutive failure. */
   reconnectDelayMs?: number;
+  /** Ceiling for the resubscribe backoff. Default 5 minutes. */
+  reconnectMaxDelayMs?: number;
   sweepIntervalMs?: number;
   /** Fallback wait for a subscription ack when the client exposes no `ready`. */
   subscribeAckTimeoutMs?: number;
   /** Backoff per failed delivery attempt; the last entry repeats. */
   deliveryBackoffMs?: number[];
+  /**
+   * Display label of a server, for the qualified pane refs in notifications
+   * (`w1:p1@buildbox`). Must be synchronous and must not throw; the profile id
+   * is a fine fallback.
+   */
+  serverLabel?: (serverId: string) => string | undefined;
+  /**
+   * Called when a server looks unhealthy (a subscription died, or its client
+   * could not be built). The registry uses it to mark the machine `down` and to
+   * re-resolve its socket path on the next attempt.
+   */
+  onServerError?: (serverId: string, reason: string) => void;
   now?: () => Date;
 }
 
 const KNOWN_STATUSES: readonly string[] = ["idle", "working", "blocked", "done", "unknown"];
 const DEFAULT_BACKOFF_MS = [1_000, 5_000, 15_000, 60_000, 300_000];
+const DEFAULT_RECONNECT_DELAY_MS = 2_000;
+/** A machine may be off for hours; keep trying, but no faster than this. */
+const DEFAULT_RECONNECT_MAX_DELAY_MS = 300_000;
 
 interface LiveSubscription {
   subscription: MaybeReadySubscription;
@@ -67,21 +101,30 @@ interface LiveSubscription {
  *    `pane.exited` race cannot notify twice.
  *  - Observation and delivery are separate: a notification that could not be
  *    delivered is persisted and retried; the watch outlives the failure.
+ *  - A watch belongs to one server (`local` or a machine profile id) and every
+ *    call goes through that server's client. A server that cannot be reached
+ *    keeps its watches pending — no settle, no notification — and is retried
+ *    with a backoff capped at a few minutes.
  */
 export class HerdrWatcher {
   #subscriptions = new Map<string, LiveSubscription>();
   #queues = new Map<string, Promise<void>>();
   #reconnectTimers = new Set<NodeJS.Timeout>();
+  /** Consecutive resubscribe failures per watch; drives the backoff. */
+  #reconnectAttempts = new Map<string, number>();
   #sweepTimer: NodeJS.Timeout | undefined;
   #stopped = false;
+  readonly #clientFor: WatcherClientResolver;
 
   constructor(
-    private readonly client: WatcherClient,
+    clients: WatcherClients,
     private readonly store: WatchStore,
     private readonly notifier: Notifier,
     private readonly logger: WatcherLogger = {},
     private readonly options: WatcherOptions = {},
-  ) {}
+  ) {
+    this.#clientFor = typeof clients === "function" ? clients : () => clients;
+  }
 
   async start(): Promise<void> {
     this.#stopped = false;
@@ -106,6 +149,7 @@ export class HerdrWatcher {
     this.#sweepTimer = undefined;
     for (const timer of this.#reconnectTimers) clearTimeout(timer);
     this.#reconnectTimers.clear();
+    this.#reconnectAttempts.clear();
     for (const id of [...this.#subscriptions.keys()]) this.#closeSubscription(id);
     await this.drain();
   }
@@ -123,6 +167,8 @@ export class HerdrWatcher {
    */
   async watch(input: {
     agent: AgentInfo;
+    /** Server the pane lives on. Defaults to `local`. */
+    serverId?: string;
     sessionKey: string;
     agentId?: string;
     promptPreview: string;
@@ -132,6 +178,7 @@ export class HerdrWatcher {
     const status = this.#normalizeStatus(input.agent.agent_status, input.agent.pane_id);
     const seq = typeof input.agent.state_change_seq === "number" ? input.agent.state_change_seq : undefined;
     const { record, replaced } = await this.store.add({
+      ...(input.serverId !== undefined ? { serverId: input.serverId } : {}),
       paneId: input.agent.pane_id,
       terminalId: input.agent.terminal_id,
       agentLabel: input.agent.name ?? input.agent.agent ?? "agent",
@@ -146,10 +193,13 @@ export class HerdrWatcher {
     // The replaced watch and its subscription die together (finding 7).
     if (replaced) {
       this.#closeSubscription(replaced.id);
-      this.logger.info?.(`herdr watch ${record.paneId}: replaced the watch of session ${replaced.sessionKey}`);
+      this.logger.info?.(`herdr watch ${this.#ref(record)}: replaced the watch of session ${replaced.sessionKey}`);
     }
     try {
       const live = this.#subscribe(record);
+      if (!live) {
+        throw new Error(`${this.#serverName(record.serverId)} is not reachable, so I cannot watch ${this.#ref(record)}`);
+      }
       await live.ready;
     } catch (error) {
       // No half-registered watch: either it is stored and listening, or gone.
@@ -160,13 +210,13 @@ export class HerdrWatcher {
   }
 
   /**
-   * Removes watches on a pane. With a `sessionKey` only that caller's watch
-   * goes away, so one chat cannot silence another's (finding 10). Returns how
-   * many watches were removed.
+   * Removes watches on one pane of one server. With a `sessionKey` only that
+   * caller's watch goes away, so one chat cannot silence another's (finding
+   * 10). Returns how many watches were removed.
    */
-  async unwatch(paneId: string, sessionKey?: string): Promise<number> {
+  async unwatch(ref: PaneRef, sessionKey?: string): Promise<number> {
     const targets = this.store
-      .listByPane(paneId)
+      .listByPane(ref)
       .filter((watch) => sessionKey === undefined || watch.sessionKey === sessionKey);
     for (const watch of targets) await this.cancel(watch.id);
     return targets.length;
@@ -195,13 +245,26 @@ export class HerdrWatcher {
 
   // ---- internals ----
 
-  #subscribe(watch: WatchRecord): LiveSubscription {
+  /**
+   * Opens (or reopens) the subscription for one watch. Returns undefined when
+   * the watch's server has no client right now: the watch stays exactly as it
+   * is and a resubscribe is scheduled with the backoff.
+   */
+  #subscribe(watch: WatchRecord): LiveSubscription | undefined {
     this.#closeSubscription(watch.id);
+    const client = this.#clientFor(watch.serverId);
+    if (!client) {
+      const reason = `${this.#serverName(watch.serverId)} is not reachable`;
+      this.logger.warn?.(`herdr watch ${this.#ref(watch)}: ${reason}; nothing settles until it answers again`);
+      this.options.onServerError?.(watch.serverId, reason);
+      this.#scheduleResubscribe(watch.id);
+      return undefined;
+    }
     let markAcked!: () => void;
     const acked = new Promise<void>((resolve) => {
       markAcked = resolve;
     });
-    const subscription = this.client.subscribe(
+    const subscription = client.subscribe(
       [
         { type: "pane.agent_status_changed", pane_id: watch.paneId },
         { type: "pane.exited" },
@@ -211,14 +274,19 @@ export class HerdrWatcher {
         markAcked();
         this.#onEvent(watch.id, event);
       },
-      (error) => this.logger.warn?.(`herdr watch ${watch.paneId}: ${error.message}`),
+      (error) => this.logger.warn?.(`herdr watch ${this.#ref(watch)}: ${error.message}`),
     ) as MaybeReadySubscription;
 
     const ackTimeout = this.options.subscribeAckTimeoutMs ?? 500;
     const ready = (subscription.ready ?? Promise.race([acked, this.#delay(ackTimeout)])).then(
-      () => undefined,
+      () => {
+        // The server is streaming: forget the previous failures.
+        this.#reconnectAttempts.delete(watch.id);
+        return undefined;
+      },
       (error: unknown) => {
-        this.logger.warn?.(`herdr watch ${watch.paneId}: subscription ack failed: ${message(error)}`);
+        this.logger.warn?.(`herdr watch ${this.#ref(watch)}: subscription ack failed: ${message(error)}`);
+        this.options.onServerError?.(watch.serverId, message(error));
       },
     );
     const live: LiveSubscription = { subscription, ready };
@@ -228,28 +296,43 @@ export class HerdrWatcher {
       .then(() => {
         if (this.#stopped || this.#subscriptions.get(watch.id) !== live) return;
         this.#subscriptions.delete(watch.id);
-        const delay = this.options.reconnectDelayMs ?? 2_000;
-        const timer = setTimeout(() => {
-          this.#reconnectTimers.delete(timer);
-          const current = this.store.byId(watch.id);
-          if (!current || this.#stopped) return;
-          this.logger.info?.(`herdr watch ${current.paneId}: resubscribing`);
-          this.#subscribe(current);
-          // A reconnect is a blind spot: re-sync from Herdr (findings 1, 9).
-          void this.#enqueue(current.id, () => this.#reconcileById(current.id, "reconnect"));
-        }, delay);
-        this.#reconnectTimers.add(timer);
-        timer.unref?.();
+        this.#scheduleResubscribe(watch.id);
       })
       .catch((error: unknown) =>
-        this.logger.error?.(`herdr watch ${watch.paneId}: reconnect bookkeeping failed: ${message(error)}`),
+        this.logger.error?.(`herdr watch ${this.#ref(watch)}: reconnect bookkeeping failed: ${message(error)}`),
       );
     return live;
+  }
+
+  /**
+   * Resubscribes after a delay that doubles per consecutive failure, capped by
+   * `reconnectMaxDelayMs`: a machine that is off for the afternoon must not be
+   * hammered, and must still be picked up when it comes back.
+   */
+  #scheduleResubscribe(watchId: string): void {
+    if (this.#stopped) return;
+    const attempts = (this.#reconnectAttempts.get(watchId) ?? 0) + 1;
+    this.#reconnectAttempts.set(watchId, attempts);
+    const base = this.options.reconnectDelayMs ?? DEFAULT_RECONNECT_DELAY_MS;
+    const cap = this.options.reconnectMaxDelayMs ?? DEFAULT_RECONNECT_MAX_DELAY_MS;
+    const delay = Math.min(base * 2 ** (attempts - 1), cap);
+    const timer = setTimeout(() => {
+      this.#reconnectTimers.delete(timer);
+      const current = this.store.byId(watchId);
+      if (!current || this.#stopped) return;
+      this.logger.info?.(`herdr watch ${this.#ref(current)}: resubscribing (attempt ${attempts})`);
+      if (!this.#subscribe(current)) return;
+      // A reconnect is a blind spot: re-sync from Herdr (findings 1, 9).
+      void this.#enqueue(current.id, () => this.#reconcileById(current.id, "reconnect"));
+    }, delay);
+    this.#reconnectTimers.add(timer);
+    timer.unref?.();
   }
 
   /** Unqueued teardown, for callers that already run inside the watch's queue. */
   async #cancelNow(watchId: string): Promise<void> {
     this.#closeSubscription(watchId);
+    this.#reconnectAttempts.delete(watchId);
     await this.store.remove(watchId);
   }
 
@@ -308,7 +391,7 @@ export class HerdrWatcher {
     if (status === "unknown") {
       // Uncertainty, not evidence: keep `sawWorking` so a later idle still counts.
       await this.store.update(current.id, { lastStatus: "unknown" });
-      this.logger.info?.(`herdr watch ${current.paneId}: Herdr cannot classify the pane right now`);
+      this.logger.info?.(`herdr watch ${this.#ref(current)}: Herdr cannot classify the pane right now`);
       return;
     }
     // idle / done / blocked: never settle on the event alone, ask Herdr.
@@ -330,11 +413,22 @@ export class HerdrWatcher {
    * cannot be reached, so a transport blip does not swallow a completion.
    */
   async #reconcile(watch: WatchRecord, reason: string, hint?: AgentStatus): Promise<void> {
+    const client = this.#clientFor(watch.serverId);
+    if (!client) {
+      // The server is unreachable, so the hint is all we have — and a hint is
+      // never enough to settle. Stay pending until the machine answers again.
+      this.logger.info?.(
+        `herdr watch ${this.#ref(watch)}: ${this.#serverName(watch.serverId)} is not reachable (${reason}); staying pending`,
+      );
+      this.options.onServerError?.(watch.serverId, `${this.#serverName(watch.serverId)} is not reachable`);
+      return;
+    }
     let info: AgentInfo | undefined;
     try {
-      info = await this.client.getAgent(watch.paneId);
+      info = await client.getAgent(watch.paneId);
     } catch (error) {
-      this.logger.warn?.(`herdr watch ${watch.paneId}: agent.get (${reason}) failed: ${message(error)}`);
+      this.logger.warn?.(`herdr watch ${this.#ref(watch)}: agent.get (${reason}) failed: ${message(error)}`);
+      if (watch.serverId !== LOCAL_SERVER_ID) this.options.onServerError?.(watch.serverId, message(error));
     }
     if (!info) {
       if (hint) await this.#applyStatus(watch, hint, undefined, hint);
@@ -344,7 +438,7 @@ export class HerdrWatcher {
     // shows is somebody else's work. Report it, attribute nothing (finding 9).
     if (watch.terminalId && info.terminal_id && info.terminal_id !== watch.terminalId) {
       this.logger.info?.(
-        `herdr watch ${watch.paneId}: terminal changed ${watch.terminalId} → ${info.terminal_id}`,
+        `herdr watch ${this.#ref(watch)}: terminal changed ${watch.terminalId} → ${info.terminal_id}`,
       );
       await this.#settle(watch, "occupant_changed");
       return;
@@ -391,12 +485,12 @@ export class HerdrWatcher {
     }
     if (status === "working") return;
     if (status === "unknown") {
-      this.logger.info?.(`herdr watch ${watch.paneId}: Herdr cannot classify the pane right now`);
+      this.logger.info?.(`herdr watch ${this.#ref(watch)}: Herdr cannot classify the pane right now`);
       return;
     }
     if (!sawWorking) {
       this.logger.info?.(
-        `herdr watch ${watch.paneId}: ${status} with no evidence the task ran (seq ${String(watch.seqAtStart)} → ${String(seq)}); waiting`,
+        `herdr watch ${this.#ref(watch)}: ${status} with no evidence the task ran (seq ${String(watch.seqAtStart)} → ${String(seq)}); waiting`,
       );
       return;
     }
@@ -407,14 +501,14 @@ export class HerdrWatcher {
     const terminal = isTerminalSettledStatus(status);
     if (watch.settledStatus && isTerminalSettledStatus(watch.settledStatus)) {
       this.logger.info?.(
-        `herdr watch ${watch.paneId}: ignoring ${status}, already settled as ${watch.settledStatus}`,
+        `herdr watch ${this.#ref(watch)}: ignoring ${status}, already settled as ${watch.settledStatus}`,
       );
       return;
     }
     let current: WatchRecord = watch;
     if (watch.pendingDelivery) {
       if (!terminal) {
-        this.logger.warn?.(`herdr watch ${watch.paneId}: ${status} skipped, a notification is still undelivered`);
+        this.logger.warn?.(`herdr watch ${this.#ref(watch)}: ${status} skipped, a notification is still undelivered`);
         return;
       }
       // We are about to take the delivery slot: give what is in it one last
@@ -424,17 +518,18 @@ export class HerdrWatcher {
       current = flushed;
       if (current.pendingDelivery) {
         this.logger.info?.(
-          `herdr watch ${current.paneId}: ${status} supersedes the undelivered ${current.pendingDelivery.status} notification`,
+          `herdr watch ${this.#ref(current)}: ${status} supersedes the undelivered ${current.pendingDelivery.status} notification`,
         );
       }
     }
 
     const notificationSeq = current.notificationSeq + 1;
-    const tail = await this.#readTail(current.paneId);
+    const tail = await this.#readTail(current);
     const observed: WatchRecord = { ...current, notificationSeq };
     const pending: PendingDelivery = {
       status,
-      text: formatNotification(observed, status, tail),
+      // Remote panes are named with their machine, so the ref can be pasted back.
+      text: formatNotification(observed, status, tail, this.#ref(current)),
       attempts: 0,
       nextAttemptAt: this.#now().toISOString(),
     };
@@ -466,7 +561,7 @@ export class HerdrWatcher {
         nextAttemptAt: new Date(this.#now().getTime() + delay).toISOString(),
       };
       this.logger.warn?.(
-        `herdr watch ${watch.paneId}: notify (${pending.status}) failed, attempt ${attempts}, retry in ${delay}ms: ${message(error)}`,
+        `herdr watch ${this.#ref(watch)}: notify (${pending.status}) failed, attempt ${attempts}, retry in ${delay}ms: ${message(error)}`,
       );
       if (!(await this.store.update(watch.id, { pendingDelivery: next }))) return undefined;
       return { ...watch, pendingDelivery: next };
@@ -503,7 +598,7 @@ export class HerdrWatcher {
       // broken for good cannot leave the record behind for ever.
       if (expired && current.pendingDelivery) {
         this.logger.error?.(
-          `herdr watch ${current.paneId}: dropping the undelivered ${current.pendingDelivery.status} notification after ${current.pendingDelivery.attempts} attempts; the watch deadline passed`,
+          `herdr watch ${this.#ref(current)}: dropping the undelivered ${current.pendingDelivery.status} notification after ${current.pendingDelivery.attempts} attempts; the watch deadline passed`,
         );
         await this.#cancelNow(current.id);
       }
@@ -512,17 +607,34 @@ export class HerdrWatcher {
     if (expired) await this.#settle(current, "timed_out");
   }
 
-  async #readTail(paneId: string): Promise<string> {
+  async #readTail(watch: WatchRecord): Promise<string> {
+    const client = this.#clientFor(watch.serverId);
+    if (!client) return "";
     try {
-      const read = await this.client.readAgent(paneId, {
+      const read = await client.readAgent(watch.paneId, {
         source: "recent",
         lines: this.options.readLines ?? 40,
       });
       return read.text;
     } catch (error) {
-      this.logger.warn?.(`herdr read ${paneId} failed: ${message(error)}`);
+      this.logger.warn?.(`herdr read ${this.#ref(watch)} failed: ${message(error)}`);
       return "";
     }
+  }
+
+  /** `w1:p1` locally, `w1:p1@buildbox` on a machine: what the operator can copy. */
+  #ref(watch: PaneRef): string {
+    return formatTargetRef(watch.paneId, this.#serverSuffix(watch.serverId));
+  }
+
+  #serverSuffix(serverId: string): string | undefined {
+    if (serverId === LOCAL_SERVER_ID) return undefined;
+    return this.options.serverLabel?.(serverId) ?? serverId;
+  }
+
+  /** How a server is named in a sentence. */
+  #serverName(serverId: string): string {
+    return this.#serverSuffix(serverId) ?? "the local Herdr";
   }
 
   /** Only Herdr's five documented states are accepted; anything else is `unknown` (finding 8). */
