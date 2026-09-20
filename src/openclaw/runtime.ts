@@ -1,5 +1,6 @@
 import { HerdrClient, HerdrRequestError, HerdrTransportError } from "../herdr/client.js";
 import type { AgentInfo } from "../herdr/types.js";
+import { compactPaneText } from "../core/compact.js";
 import { formatAgentList, formatSendAccepted, formatStatus, preview } from "../core/format.js";
 import { HELP_TEXT, parseHerdrCommand, type HerdrCommand } from "../core/parse.js";
 import { resolveTarget } from "../core/targets.js";
@@ -90,7 +91,8 @@ export class HerdrRuntime {
       source: "recent",
       lines: lines ?? this.config.readLines,
     });
-    return "```\n" + read.text.trimEnd() + "\n```";
+    const compact = compactPaneText(read.text, { maxLines: lines ?? this.config.readLines });
+    return compact ? "```\n" + compact + "\n```" : `${target.agent.pane_id} shows nothing yet.`;
   }
 
   async send(selector: string | undefined, text: string, caller: Caller, watch = true): Promise<string> {
@@ -103,7 +105,7 @@ export class HerdrRuntime {
       return [
         `${agent.pane_id} is waiting for input, so I did not send anything.`,
         "Read the prompt below and answer it in the terminal, or tell me what to answer.",
-        tail ? "```\n" + tail.trimEnd() + "\n```" : "",
+        tail ? "```\n" + compactPaneText(tail, { maxLines: 20 }) + "\n```" : "",
       ].join("\n");
     }
     await this.client.prompt(agent.pane_id, text);

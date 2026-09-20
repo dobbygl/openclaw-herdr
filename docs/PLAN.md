@@ -40,8 +40,9 @@ fields are ignorable. Building on that removes all three failure classes.
 
 ### M1 — First live loop on operator-host
 
-- [ ] `openclaw plugins install ~/Projects/openclaw-herdr` on the host, restart Gateway.
-- [ ] `/herdr list` from Telegram shows the Claude pane Herdr sees.
+- [x] `openclaw plugins install --link --accept-capabilities ~/Projects/openclaw-herdr` on the host, restart Gateway (2026-09-20).
+- [x] `/herdr`, `/herdr list` and `/herdr status` from Telegram show the Claude pane Herdr sees (2026-09-20).
+- [x] Compact pane output for phone-width code blocks (strip dividers, footer chrome, empty composer, right-aligned hints).
 - [ ] `/herdr w6:p1: reply with exactly OK` sends; a `[Herdr watch event]` reaches Telegram within seconds of Claude going idle.
 - [ ] Confirm the wake path: does `enqueueNextTurnInjection` + `requestHeartbeat` deliver a message without the user speaking first? If not, evaluate `runtime.agent.runCommandFromIngress` or a plugin-owned gateway method, as AKK does.
 - [ ] Confirm `agent.prompt` on Claude Code 2.1.278 submits in one shot (bracketed paste + Enter) with a multi-line prompt.

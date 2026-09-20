@@ -19,7 +19,7 @@
 It replaces screen scraping with Herdr's own agent lifecycle API, so it does not care which version of Herdr, Claude Code or Codex you run today.
 
 > [!NOTE]
-> Status: early prototype (M0). The command surface and tests exist; the first live loop against a real Gateway is the next milestone. See [docs/PLAN.md](docs/PLAN.md).
+> Status: prototype under live testing (milestone M1). `/herdr list`, `/herdr status` and `/herdr read` are verified from Telegram against a real Gateway; the send-and-notify loop is being validated next. See [docs/PLAN.md](docs/PLAN.md).
 
 ## Features
 
@@ -40,15 +40,20 @@ git clone https://github.com/dobbygl/openclaw-herdr.git
 cd openclaw-herdr
 npm install
 npm run build
-openclaw plugins install "$PWD"
+openclaw plugins install --link --accept-capabilities "$PWD"
 openclaw gateway restart
 ```
+
+`--link` keeps OpenClaw pointed at your checkout, so `npm run build` followed by a Gateway restart is enough to pick up changes. Drop it to copy the plugin into OpenClaw instead. The plugin registers under the id `herdr`, so it appears as `plugins.entries.herdr` in `openclaw.json`.
 
 Check that the plugin can see Herdr before using it from chat:
 
 ```bash
 npm run smoke
 ```
+
+> [!IMPORTANT]
+> OpenClaw warns that a local path is outside ClawHub review. That is expected until the plugin is published; review the source before accepting.
 
 ## Usage
 
@@ -73,6 +78,8 @@ Herdr: w6:p1 (claude) finished.
 > fix the failing test and explain the cause
 ```
 followed by the tail of the pane. A `needs your input` variant appears when Herdr detects an approval or question UI.
+
+Pane output is compacted for phones before it reaches the chat: trailing whitespace, 120-column divider rules, the empty composer and the agent's footer hints are stripped, and only the last lines are kept. This is presentation only; agent state always comes from Herdr.
 
 > [!TIP]
 > Agents started with `claude` or `codex --yolo` in bypass mode will run whatever you send. Keep the `/herdr` command restricted to authorized senders (the default) and prefer normal permission modes for anything that touches production.

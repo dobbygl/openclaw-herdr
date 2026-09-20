@@ -45,7 +45,7 @@ describe("HerdrRuntime commands", () => {
     const { runtime, client } = await makeRuntime();
     const out = await runtime.handleCommand("run the tests", { sessionKey: "agent:main:telegram:1" });
     expect(client.prompts).toEqual([{ target: "w6:p1", text: "run the tests" }]);
-    expect(out).toContain("Sent to w6:p1");
+    expect(out).toContain("Sent to **w6:p1**");
     expect(out).toContain("I will tell you");
   });
 
