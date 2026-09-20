@@ -90,6 +90,47 @@ After merge (owner: maintainer):
 - [ ] Watch deadline sweep test with a fake clock; idempotent notifications after restart.
 - [ ] Decide whether to move to `defineToolPlugin`/feature contracts so `openclaw plugins validate` and `pack` work (they only understand those authoring forms; legacy `definePluginEntry` plugins like AKK install fine without them).
 
+### M2.5 — Remote Herdr servers (multi-machine)
+
+Motivation: monitor and, when explicitly allowed, drive agents in a Herdr
+running on another machine (first case: `labbox`, Herdr 0.9.0 / protocol 22,
+socket owned by a different Unix user, mode 0600).
+
+Verified facts: the Herdr socket API has no machine routing field; the CLI's
+`--machine` forwarding runs over SSH and exposes no event stream. Keeping
+`events.subscribe` therefore requires a local Unix-socket proxy to the remote
+socket. A one-off SSH bridge already reached `ping`, `agent.list` and a
+`subscription_started` ack from this host.
+
+Design decisions:
+- Target grammar becomes `selector[@server]`: `w1:p1@labbox` (canonical),
+  `trabajo@labbox` (Herdr agent name), `claude@labbox` (kind, only if unique).
+  No `@server` means the default server (`local`), so existing usage keeps
+  working and a new machine never silently changes a destination.
+- `@server` is a configured alias, never a hostname typed in chat.
+- A `kind:name` prefix is deferred: it would give the colon a third meaning
+  next to pane ids and the prompt separator, for little gain now that watches
+  fence on `terminal_id`.
+- A watch is stored as `{serverId, paneId, terminalId, sessionKey}`; `unwatch`
+  and target resolution are server-scoped. Ambiguity is refused per level as today.
+- `/herdr list` groups by server and prints copyable references (`w3:p1@labbox`).
+- Per-server `allowSend` (default `false` for non-local servers): remote
+  monitoring is opt-in for reads, sending prompts to another user's agents is
+  a deliberate privilege and must be enabled explicitly.
+- Remote pane output enters the chat exactly like local output; same trust
+  boundary, now spanning another machine and user.
+
+Tasks:
+- [ ] Config: `servers: { local: { socketPath }, labbox: { socketPath, allowSend, label } }`; keep the flat `socketPath` as an alias for `servers.local`.
+- [ ] Parser/targets: accept `@server` (split on the last `@`), keep `w6:p1: prompt` working, reject unknown aliases with the configured list.
+- [ ] Runtime: one `HerdrClient` per server; list grouped by server; status/read/send/watch/unwatch carry `serverId`; enforce `allowSend`.
+- [ ] Store/watcher: `serverId` in `WatchRecord` (migrate old records to `local`); subscriptions keyed by server + pane; reconcile per server on reconnect.
+- [ ] Health: periodic `ping` per server; a server that fails is shown as `down` in `/herdr list` and its watches stay pending until it returns.
+- [ ] Tunnel: user unit `herdr-tunnel-<server>.service` running `ssh -N -L <local.sock>:<remote.sock> <user>@<host>` with `StreamLocalBindUnlink=yes`, `ExitOnForwardFailure=yes`, `ServerAliveInterval=15`, `Restart=always`; local socket mode 0600; documented in README with the alice-owned-socket caveat.
+- [ ] Degraded mode note: without a tunnel, `herdr --machine <alias> agent wait <target> --until idle` gives a blocking wait; documented as fallback only.
+- [ ] Tests: unknown alias, same pane id on two servers, ambiguous names across servers, `allowSend` refusal, tunnel down then back (reconcile), migration of pre-2.5 watch records.
+- [ ] Live validation from Telegram: `/herdr list`, `/herdr status w3:p1@labbox`, a watch on a remote Codex that finishes, SSH drop and recovery.
+
 ### M3 — Operator ergonomics
 
 - [ ] `/herdr start <kind> [--cwd path]` using `agent.start` in a new pane (`pane.split` / `workspace.create`).
