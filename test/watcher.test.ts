@@ -645,6 +645,18 @@ describe("HerdrWatcher servers", () => {
     expect(store.list()).toHaveLength(0);
   });
 
+  it("still qualifies the notification when the machine's label is not known yet", async () => {
+    // Right after a restart the catalog may not be read yet, so `serverLabel`
+    // answers undefined. A remote pane must then be named with the profile id
+    // rather than silently reported as if it were this host's pane.
+    await startWatch({ serverId: "lab999" });
+    client.setAgent("w1:p1", { agent_status: "done", state_change_seq: 11 });
+    client.emit("w1:p1", "done");
+    await settle();
+    expect(notifier.statuses()).toEqual(["done"]);
+    expect(notifier.calls[0]?.text).toContain("**w1:p1@lab999**");
+  });
+
   it("scopes unwatch to one server", async () => {
     await startWatch();
     await startWatch({ serverId: BUILDBOX, agent: remoteAgent });
