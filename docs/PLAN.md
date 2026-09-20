@@ -38,7 +38,7 @@ fields are ignorable. Building on that removes all three failure classes.
 - Unit tests for every pure module; fake Herdr server for the client.
 - Read-only live smoke script.
 
-### M1 — First live loop on operator-host
+### M1 — First live loop on the operator host
 
 - [x] `openclaw plugins install --link --accept-capabilities ~/Projects/openclaw-herdr` on the host, restart Gateway (2026-09-20).
 - [x] `/herdr`, `/herdr list` and `/herdr status` from Telegram show the Claude pane Herdr sees (2026-09-20).
@@ -93,8 +93,8 @@ After merge (owner: maintainer):
 ### M2.5 — Remote Herdr machines
 
 Motivation: monitor and, when explicitly allowed, drive agents in a Herdr
-running on another machine. First case: the saved machine `buildbox` (Herdr 0.9.1,
-protocol 22, remote user `alice`), already linked with `herdr machine add`.
+running on another machine. First case: one saved machine (Herdr 0.9.1,
+protocol 22, a different remote user), already linked with `herdr machine add`.
 
 Verified facts (2026-09-20, read-only probes from this host):
 - The local socket API has no machine routing and the local snapshot does not
@@ -103,11 +103,11 @@ Verified facts (2026-09-20, read-only probes from this host):
   this host but costs 6–12 s per call (SSH + remote bridge discovery) and
   offers no `events.subscribe`; only blocking `agent wait`.
 - Raw SSH to the same host: 2.0 s cold, 1.3 s with ControlMaster. Speaking the
-  socket protocol directly over SSH stdio (`ssh buildbox socat - UNIX-CONNECT:…`,
+  socket protocol directly over SSH stdio (`ssh <target> socat - UNIX-CONNECT:…`,
   or a python one-liner as fallback) answers `ping` in 0.6 s and is the exact
   newline-delimited JSON the plugin already implements, including
   `events.subscribe`. The remote socket is `0600` and owned by the SSH user, so
-  the saved machine must use that user (`alice@…`), which Herdr's own
+  the saved machine must use that user (`<user>@<host>`), which Herdr's own
   `machine add` also requires.
 
 Decisions:
@@ -126,7 +126,7 @@ Decisions:
   case-sensitive) or id; watches store the profile id and display the label.
 - `herdr --machine` remains the human CLI and an optional fallback transport
   (blocking `agent wait`) when SSH stdio is unavailable.
-- Target grammar `selector[@server]` stays: `w9:p1@buildbox`, `reviewer@buildbox`,
+- Target grammar `selector[@server]` stays: `w1:p1@buildbox`, `reviewer@buildbox`,
   `claude@buildbox`. No suffix means `local`.
 - Per-machine `allowSend` (default `false`): remote reads on by default,
   remote prompts and key presses opt-in.
@@ -139,12 +139,12 @@ Tasks:
 - [ ] Machine catalog: `herdr machine list --json` (short cache) → `local` + enabled machines; resolve and cache each remote socket path; unknown alias error lists known machines.
 - [ ] Grammar/targets: `selector@server`, split on the last `@`, server-scoped resolution with the existing precedence.
 - [ ] Transport: connection factory in `HerdrClient`; `SshStdioConnection` spawning `ssh … socat - UNIX-CONNECT:<sock>` with argv arrays (no shell interpolation of user input), python fallback, ControlMaster options, per-request and subscription timeouts, exit-code and stderr mapping.
-- [ ] Runtime: `/herdr list` grouped by machine with copyable `w9:p1@buildbox` refs; status/read/send/watch/unwatch carry `serverId`; enforce `allowSend`.
+- [ ] Runtime: `/herdr list` grouped by machine with copyable `w1:p1@buildbox` refs; status/read/send/watch/unwatch carry `serverId`; enforce `allowSend`.
 - [ ] Store/watcher: `serverId` in `WatchRecord` (migrate old records to `local`); one client per server; subscriptions keyed by server + pane.
 - [ ] Health: `ping` per machine on list and after subscription failures; `down` shown in the list, remote watches stay pending.
 - [ ] Tests: fake `ssh` script that proxies to the fake Herdr server; unknown machine; same pane id on two machines; ambiguous names across machines; `allowSend` refusal; SSH drop → reconnect → reconcile; migration.
-- [ ] Docs: README "Remote machines": `herdr machine add alice@host --label buildbox`, SSH key loaded for non-interactive use, socket ownership caveat, `remote.allowSend`, grammar.
-- [ ] Live validation from Telegram against `buildbox`: `/herdr list`, `/herdr status w9:p2@buildbox`, a watch on a remote Codex that finishes, SSH drop and recovery.
+- [ ] Docs: README "Remote machines": `herdr machine add <user>@<host> --label buildbox`, SSH key loaded for non-interactive use, socket ownership caveat, `remote.allowSend`, grammar.
+- [ ] Live validation from Telegram against the saved machine: `/herdr list`, `/herdr status w1:p2@buildbox`, a watch on a remote Codex that finishes, SSH drop and recovery.
 
 ### M3 — Operator ergonomics
 
