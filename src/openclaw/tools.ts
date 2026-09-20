@@ -81,15 +81,27 @@ export function registerHerdrTools(api: HostApi, runtime: HerdrRuntime): void {
         "Open a new Herdr pane (or reuse an empty pane labelled with the name) and start a coding agent in it. The name becomes the target for herdr_send. Remote machines need remote.allowSend.",
       parameters: Type.Object(
         {
-          name: Type.String({ description: "Agent name, lowercase [a-z0-9_-], optionally @machine." }),
-          kind: Type.Optional(Type.String({ description: "Agent kind: claude (default), codex, gemini, …" })),
-          cwd: Type.Optional(Type.String({ description: "Working directory for the new pane." })),
+          name: Type.String({ description: "Agent name, lowercase [a-z0-9_-], optionally @machine (as in `herdr agent start <name>`)." }),
+          kind: Type.Optional(Type.String({ description: "Agent kind (`--kind`): claude (default), codex, gemini, …" })),
+          pane: Type.Optional(Type.String({ description: "Existing idle shell pane to use (`--pane w1:p2`). Omit to open a new pane." })),
+          cwd: Type.Optional(Type.String({ description: "Working directory when a new pane is opened." })),
+          timeoutMs: Type.Optional(Type.Integer({ minimum: 3001, maximum: 300000, description: "Startup wait (`--timeout`)." })),
+          args: Type.Optional(Type.Array(Type.String(), { description: "Native agent arguments passed after `--`." })),
         },
         { additionalProperties: false },
       ),
       execute: (_id, params) => {
-        const p = params as { name: string; kind?: string; cwd?: string };
-        return guarded(() => runtime.startAgent(p.name, p.kind ?? "claude", p.cwd));
+        const p = params as { name: string; kind?: string; pane?: string; cwd?: string; timeoutMs?: number; args?: string[] };
+        return guarded(() =>
+          runtime.startAgent({
+            name: p.name,
+            agentKind: p.kind ?? "claude",
+            ...(p.pane ? { paneId: p.pane } : {}),
+            ...(p.cwd ? { cwd: p.cwd } : {}),
+            ...(p.timeoutMs !== undefined ? { timeoutMs: p.timeoutMs } : {}),
+            ...(p.args ? { agentArgs: p.args } : {}),
+          }),
+        );
       },
     }),
     () => ({

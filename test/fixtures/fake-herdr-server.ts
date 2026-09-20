@@ -44,7 +44,7 @@ export interface FakeHerdr {
   /** Every `agent.prompt` this server accepted, in order. */
   readonly prompts: Array<{ target: string; text: string }>;
   readonly created: Array<{ label: string; cwd: string | undefined }>;
-  readonly starts: Array<{ name: string; kind: string; paneId: string }>;
+  readonly starts: Array<{ name: string; kind: string; paneId: string; args: string[] | undefined }>;
   /** Adds a plain shell pane (no agent) that `pane.list` reports and `agent.start` can use. */
   addShellPane(paneId: string, label?: string): void;
   /** Pane id of every `events.subscribe` this server accepted, in order. */
@@ -115,7 +115,7 @@ export async function startFakeHerdr(prefix = "herdr-fake-", options: FakeHerdrO
   const prompts: Array<{ target: string; text: string }> = [];
   const shellPanes: Array<{ pane_id: string; workspace_id: string; tab_id: string; label: unknown; agent: null; cwd: unknown }> = [];
   const created: Array<{ label: string; cwd: string | undefined }> = [];
-  const starts: Array<{ name: string; kind: string; paneId: string }> = [];
+  const starts: Array<{ name: string; kind: string; paneId: string; args: string[] | undefined }> = [];
   const subscribes: string[] = [];
   let agents: unknown[] = [...(options.agents ?? DEFAULT_AGENTS)];
   let readText = options.readText ?? "❯ \n";
@@ -197,7 +197,7 @@ export async function startFakeHerdr(prefix = "herdr-fake-", options: FakeHerdrO
             shellPanes.splice(shellPanes.indexOf(shell), 1);
             agents.push(agent);
             panes.set(paneId, agent);
-            starts.push({ name: agent.name, kind: agent.agent, paneId });
+            starts.push({ name: agent.name, kind: agent.agent, paneId, args: Array.isArray(request.params.args) ? (request.params.args as string[]) : undefined });
             reply({ id: request.id, result: { type: "agent_started", agent } });
           }
           socket.end();

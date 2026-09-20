@@ -28,7 +28,15 @@ export type HerdrCommand =
   | { kind: "watch"; target: string }
   | { kind: "unwatch"; target: string }
   | { kind: "send"; target?: string; text: string }
-  | { kind: "start"; name: string; agentKind: string; cwd?: string }
+  | {
+      kind: "start";
+      name: string;
+      agentKind: string;
+      paneId?: string;
+      cwd?: string;
+      timeoutMs?: number;
+      agentArgs?: string[];
+    }
   | { kind: "error"; message: string };
 
 /** Herdr's own rule for live agent names. An optional `@server` may follow. */
@@ -129,29 +137,78 @@ export function parseHerdrCommand(rawArgs: string | undefined): HerdrCommand {
     return { kind: "read", target, lines };
   }
 
-  if (word === "start" || word === "new") {
-    const [rawName, ...more] = rest;
-    if (rawName === undefined) {
-      return error(`Usage: /herdr start <name> [kind] [cwd] — e.g. /herdr start reviewer codex ~/project (kind defaults to ${DEFAULT_AGENT_KIND}).`);
-    }
+  if (word === "start") {
+    // Mirrors `herdr agent start <name> --kind <kind> --pane <id> [--timeout <ms>] [-- <agent args>]`,
+    // plus `--cwd <path>` (Herdr takes it from `tab create` when no pane is given).
+    const usage = "Usage: /herdr start <name> --kind <kind> [--pane <id>] [--cwd <path>] [--timeout <ms>] [-- <agent args>]";
+    const [rawName, ...flags] = rest;
+    if (rawName === undefined || rawName.startsWith("-")) return error(`${usage} — e.g. /herdr start reviewer --kind codex --cwd ~/project.`);
     const at = rawName.lastIndexOf("@");
     const bareName = at > 0 ? rawName.slice(0, at) : rawName;
     const server = at > 0 ? rawName.slice(at + 1) : undefined;
     if (!AGENT_NAME.test(bareName) || (server !== undefined && !new RegExp(`^${SERVER_SOURCE}$`, "u").test(server))) {
       return error(`"${rawName}" is not a usable agent name: lowercase letters, digits, "_" or "-", up to 32 characters, optionally @machine.`);
     }
-    let agentKind = DEFAULT_AGENT_KIND;
+    let agentKind: string | undefined;
+    let paneId: string | undefined;
     let cwd: string | undefined;
-    for (const token of more) {
-      if (/^[a-z][a-z0-9-]{0,20}$/u.test(token) && cwd === undefined && agentKind === DEFAULT_AGENT_KIND && !token.startsWith("~") && !token.startsWith("/")) {
-        agentKind = token;
-      } else if (cwd === undefined && (token.startsWith("/") || token.startsWith("~") || token.startsWith("."))) {
-        cwd = token;
-      } else {
-        return error(`Usage: /herdr start <name> [kind] [cwd] — did not understand "${token}".`);
+    let timeoutMs: number | undefined;
+    let agentArgs: string[] | undefined;
+    for (let i = 0; i < flags.length; i += 1) {
+      const token = flags[i] as string;
+      if (token === "--") {
+        agentArgs = flags.slice(i + 1);
+        break;
+      }
+      const eq = token.startsWith("--") ? token.indexOf("=") : -1;
+      const flag = eq > 0 ? token.slice(0, eq) : token;
+      const inline = eq > 0 ? token.slice(eq + 1) : undefined;
+      const takeValue = (): string | undefined => {
+        if (inline !== undefined) return inline;
+        const next = flags[i + 1];
+        if (next === undefined || next === "--") return undefined;
+        i += 1;
+        return next;
+      };
+      switch (flag) {
+        case "--kind": {
+          const value = takeValue();
+          if (value === undefined || !/^[a-z][a-z0-9-]{0,20}$/u.test(value)) return error(`--kind needs an agent kind such as claude or codex. ${usage}`);
+          agentKind = value;
+          break;
+        }
+        case "--pane": {
+          const value = takeValue();
+          if (value === undefined || !/^[a-z][a-z0-9]*:p[0-9]+$/iu.test(value)) return error(`--pane needs a pane id such as w1:p2. ${usage}`);
+          paneId = value;
+          break;
+        }
+        case "--cwd": {
+          const value = takeValue();
+          if (value === undefined) return error(`--cwd needs a path. ${usage}`);
+          cwd = value;
+          break;
+        }
+        case "--timeout": {
+          const value = takeValue();
+          const ms = value !== undefined && /^\d{4,6}$/u.test(value) ? Number(value) : Number.NaN;
+          if (!Number.isFinite(ms) || ms <= 3000 || ms > 300_000) return error(`--timeout is in milliseconds, more than 3000 and at most 300000. ${usage}`);
+          timeoutMs = ms;
+          break;
+        }
+        default:
+          return error(`Did not understand "${token}". ${usage}`);
       }
     }
-    return { kind: "start", name: rawName, agentKind, ...(cwd !== undefined ? { cwd } : {}) };
+    return {
+      kind: "start",
+      name: rawName,
+      agentKind: agentKind ?? DEFAULT_AGENT_KIND,
+      ...(paneId !== undefined ? { paneId } : {}),
+      ...(cwd !== undefined ? { cwd } : {}),
+      ...(timeoutMs !== undefined ? { timeoutMs } : {}),
+      ...(agentArgs !== undefined ? { agentArgs } : {}),
+    };
   }
 
   if (word === "watch" || word === "unwatch") {
@@ -198,7 +255,7 @@ export const HELP_TEXT = [
   "/herdr status [target]",
   `/herdr read <target> [lines ${MIN_READ_LINES}-${MAX_READ_LINES}]`,
   "/herdr watch <target> · /herdr unwatch <target>",
-  "/herdr start <name> [kind] [cwd] — open a new pane and start an agent there (kind defaults to claude)",
+  "/herdr start <name> --kind <kind> [--pane <id>] [--cwd <path>] [-- <agent args>] — like herdr agent start; opens a pane when --pane is omitted",
   `Targets: ${TARGET_HINT}; a pane id wins over a name, a name over a kind.`,
   "Add @machine to target a saved Herdr machine: w9:p1@buildbox",
   "list/status/read/watch/unwatch/start are commands: to send a prompt that starts with one, use /herdr <target>: <prompt>.",

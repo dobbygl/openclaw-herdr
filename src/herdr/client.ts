@@ -355,11 +355,23 @@ export class HerdrClient {
    * Starts a supported agent in an existing shell pane and waits until Herdr
    * sees it ready. The transport budget covers the server-side startup wait.
    */
-  async startAgent(options: { name: string; kind: string; paneId: string; timeoutMs?: number }): Promise<AgentInfo> {
+  async startAgent(options: {
+    name: string;
+    kind: string;
+    paneId: string;
+    args?: string[];
+    timeoutMs?: number;
+  }): Promise<AgentInfo> {
     const timeoutMs = options.timeoutMs ?? 60_000;
     const result = await this.request<unknown>(
       "agent.start",
-      { name: options.name, kind: options.kind, pane_id: options.paneId, timeout_ms: timeoutMs },
+      {
+        name: options.name,
+        kind: options.kind,
+        pane_id: options.paneId,
+        timeout_ms: timeoutMs,
+        ...(options.args && options.args.length > 0 ? { args: options.args } : {}),
+      },
       { requestTimeoutMs: timeoutMs + 10_000 },
     );
     const payload = isRecord(result) && isRecord(result.agent) ? result.agent : result;

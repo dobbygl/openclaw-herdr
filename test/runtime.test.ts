@@ -390,9 +390,9 @@ describe("HerdrRuntime start", () => {
 
   it("opens a new tab and starts the agent, then targets it by name", async () => {
     const { runtime } = await runtimeOnFake();
-    const out = await runtime.handleCommand("start cuento codex ~/tales", {});
+    const out = await runtime.handleCommand("start cuento --kind codex --cwd ~/tales -- --yolo", {});
     expect(fake.created).toEqual([{ label: "cuento", cwd: "~/tales" }]);
-    expect(fake.starts).toEqual([{ name: "cuento", kind: "codex", paneId: "w1:p90" }]);
+    expect(fake.starts).toEqual([{ name: "cuento", kind: "codex", paneId: "w1:p90", args: ["--yolo"] }]);
     expect(out).toContain("Started **cuento** (codex) in **w1:p90** (new pane)");
     const sent = await runtime.handleCommand("cuento: write a story", { sessionKey: "s" });
     expect(fake.prompts).toEqual([{ target: "w1:p90", text: "write a story" }]);
@@ -404,9 +404,20 @@ describe("HerdrRuntime start", () => {
     fake.addShellPane("w1:p7", "cuento");
     const out = await runtime.handleCommand("start cuento", {});
     expect(fake.created).toEqual([]);
-    expect(fake.starts).toEqual([{ name: "cuento", kind: "claude", paneId: "w1:p7" }]);
+    expect(fake.starts).toEqual([{ name: "cuento", kind: "claude", paneId: "w1:p7", args: undefined }]);
     expect(out).toContain("in **w1:p7**");
     expect(out).not.toContain("new pane");
+  });
+
+  it("uses the pane given with --pane and refuses a pane that is busy or missing", async () => {
+    const { runtime } = await runtimeOnFake();
+    fake.addShellPane("w1:p8", "scratch");
+    const out = await runtime.handleCommand("start cuento --pane w1:p8", {});
+    expect(fake.starts).toEqual([{ name: "cuento", kind: "claude", paneId: "w1:p8", args: undefined }]);
+    expect(out).toContain("in **w1:p8**");
+    expect(await runtime.handleCommand("start other --pane w1:p8", {})).toContain("already runs");
+    expect(await runtime.handleCommand("start other --pane w1:p99", {})).toContain("no pane w1:p99");
+    expect(fake.created).toEqual([]);
   });
 
   it("refuses a name that already runs an agent", async () => {
@@ -420,7 +431,7 @@ describe("HerdrRuntime start", () => {
 
   it("relays Herdr's refusal when the agent cannot be started", async () => {
     const { runtime } = await runtimeOnFake();
-    const out = await runtime.handleCommand("start busy nope", {});
+    const out = await runtime.handleCommand("start busy --kind nope", {});
     expect(out).toContain("could not start nope as busy");
     expect(out).toContain("unsupported_kind");
     expect(fake.starts).toEqual([]);

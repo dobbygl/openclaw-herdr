@@ -24,6 +24,15 @@ import { HerdrWatcher, type Notifier } from "../core/watcher.js";
 import type { HerdrPluginConfig } from "./config.js";
 import type { HostLogger } from "./host-api.js";
 
+export interface StartAgentOptions {
+  name: string;
+  agentKind: string;
+  paneId?: string;
+  cwd?: string;
+  timeoutMs?: number;
+  agentArgs?: string[];
+}
+
 export interface Caller {
   sessionKey?: string;
   agentId?: string;
@@ -274,7 +283,8 @@ export class HerdrRuntime {
    * workspace. Starting an agent is input, so a remote machine needs
    * `remote.allowSend`. The agent's Herdr name is the target from then on.
    */
-  async startAgent(rawName: string, agentKind: string, cwd?: string): Promise<string> {
+  async startAgent(options: StartAgentOptions): Promise<string> {
+    const { name: rawName, agentKind, cwd } = options;
     let parsed: { selector: string; server?: string };
     try {
       parsed = parseTargetRef(rawName);
@@ -299,13 +309,23 @@ export class HerdrRuntime {
       const taken = agents.find((agent) => agent.agent !== null && agent.name === name);
       if (taken) return `${formatTargetRef(name, suffix)} already runs ${taken.agent} in **${taken.pane_id}**; pick another name.`;
       const panes = await client.listPanes();
-      let pane = panes.find((candidate) => (candidate.label ?? "") === name && !candidate.agent);
+      let pane = options.paneId
+        ? panes.find((candidate) => candidate.pane_id === options.paneId)
+        : panes.find((candidate) => (candidate.label ?? "") === name && !candidate.agent);
+      if (options.paneId && !pane) return `There is no pane ${formatTargetRef(options.paneId, suffix)}.`;
+      if (options.paneId && pane?.agent) return `${formatTargetRef(options.paneId, suffix)} already runs ${pane.agent}; Herdr needs an idle shell pane.`;
       let created = false;
       if (!pane) {
         pane = await client.createTab({ label: name, ...(cwd ? { cwd } : {}), focus: false });
         created = true;
       }
-      const agent = await client.startAgent({ name, kind: agentKind, paneId: pane.pane_id });
+      const agent = await client.startAgent({
+        name,
+        kind: agentKind,
+        paneId: pane.pane_id,
+        ...(options.agentArgs ? { args: options.agentArgs } : {}),
+        ...(options.timeoutMs !== undefined ? { timeoutMs: options.timeoutMs } : {}),
+      });
       const ref = formatTargetRef(agent.pane_id, suffix);
       return [
         `Started **${name}** (${agentKind}) in **${ref}**${created ? " (new pane)" : ""}.`,
@@ -374,7 +394,7 @@ export class HerdrRuntime {
       case "send":
         return this.send(command.target, command.text, caller);
       case "start":
-        return this.startAgent(command.name, command.agentKind, command.cwd);
+        return this.startAgent(command);
       case "error":
         return command.message;
     }
