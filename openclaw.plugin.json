@@ -45,6 +45,37 @@
       "readLines": {
         "type": "number",
         "description": "Lines of pane output included in notifications and /herdr read. Defaults to 40."
+      },
+      "openclawBin": {
+        "type": "string",
+        "description": "OpenClaw CLI used for chat.send delivery when no in-process Gateway context is available. Defaults to openclaw on PATH."
+      },
+      "deliveryTimeoutMs": {
+        "type": "number",
+        "description": "Timeout for one watch-result delivery attempt. Defaults to 60000."
+      },
+      "herdrBin": {
+        "type": "string",
+        "description": "herdr executable. Defaults to herdr on PATH."
+      },
+      "sshBin": {
+        "type": "string",
+        "description": "ssh executable used for remote machine transport. Defaults to ssh on PATH."
+      },
+      "remote": {
+        "type": "object",
+        "description": "Remote Herdr machine access.",
+        "properties": {
+          "enabled": {
+            "type": "boolean",
+            "description": "Whether remote machines are discovered/reachable at all. Defaults to true."
+          },
+          "allowSend": {
+            "type": "array",
+            "items": { "type": "string" },
+            "description": "Machine labels or profile ids (e.g. \"buildbox\") allowed to receive prompts/key presses. Defaults to an empty list."
+          }
+        }
       }
     }
   }
