@@ -19,7 +19,7 @@
 It replaces screen scraping with Herdr's own agent lifecycle API, so it does not care which version of Herdr, Claude Code or Codex you run today.
 
 > [!NOTE]
-> Status: prototype under live testing. `/herdr list`, `/herdr status`, `/herdr read` and `/herdr <pane>: <prompt>` are verified from Telegram against a real Gateway (milestone M1.5); two delivery mechanisms were disproved live (a bare heartbeat wake, then `chat.send`, which the Gateway reserves for official plugins), so notifications now run a heartbeat turn in the originating session, verified live. Remote machines (milestone M2.5) are implemented and awaiting live validation. Remote machines (milestone M2.5 — discovery, the `selector@server` grammar, the SSH stdio transport, `remote.allowSend`) are implemented but not yet exercised live against a saved machine. See [docs/PLAN.md](docs/PLAN.md).
+> Status: prototype under live testing. `/herdr list`, `/herdr status`, `/herdr read` and `/herdr <pane>: <prompt>` are verified from Telegram against a real Gateway (milestone M1.5); two delivery mechanisms were disproved live (a bare heartbeat wake, then `chat.send`, which the Gateway reserves for official plugins), so notifications now run a heartbeat turn in the originating session, verified live. Remote machines (milestone M2.5 — discovery, the `selector@server` grammar, the SSH stdio transport, `remote.allowSend`) are implemented but not yet exercised live against a saved machine. See [docs/PLAN.md](docs/PLAN.md).
 
 ## Features
 
