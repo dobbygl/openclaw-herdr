@@ -234,31 +234,24 @@ describe("parseHerdrCommand", () => {
 });
 
 describe("parseHerdrCommand start", () => {
-  it("mirrors herdr agent start flags", () => {
+  it("parses name, optional kind and an optional pane id or cwd, in any order", () => {
     expect(parseHerdrCommand("start cuento")).toEqual({ kind: "start", name: "cuento", agentKind: "claude" });
-    expect(parseHerdrCommand("start reviewer --kind codex")).toEqual({ kind: "start", name: "reviewer", agentKind: "codex" });
-    expect(parseHerdrCommand("start reviewer --kind=codex --pane w1:p2 --cwd ~/project --timeout 45000")).toEqual({
+    expect(parseHerdrCommand("start reviewer codex")).toEqual({ kind: "start", name: "reviewer", agentKind: "codex" });
+    expect(parseHerdrCommand("start cuento claude w7:p2")).toEqual({ kind: "start", name: "cuento", agentKind: "claude", paneId: "w7:p2" });
+    expect(parseHerdrCommand("start cuento w7:p2")).toEqual({ kind: "start", name: "cuento", agentKind: "claude", paneId: "w7:p2" });
+    expect(parseHerdrCommand("start reviewer ~/project codex")).toEqual({
       kind: "start",
       name: "reviewer",
       agentKind: "codex",
-      paneId: "w1:p2",
       cwd: "~/project",
-      timeoutMs: 45_000,
     });
-    expect(parseHerdrCommand("start writer --kind claude -- --model sonnet --verbose")).toEqual({
-      kind: "start",
-      name: "writer",
-      agentKind: "claude",
-      agentArgs: ["--model", "sonnet", "--verbose"],
-    });
-    expect(parseHerdrCommand("start writer@buildbox --kind codex")).toEqual({ kind: "start", name: "writer@buildbox", agentKind: "codex" });
+    expect(parseHerdrCommand("start writer@buildbox codex")).toEqual({ kind: "start", name: "writer@buildbox", agentKind: "codex" });
   });
-  it("rejects bad names, unknown flags and bad values", () => {
+  it("rejects bad names, flags and stray tokens", () => {
     expect(parseHerdrCommand("start").kind).toBe("error");
     expect(parseHerdrCommand("start Cuento").kind).toBe("error");
-    expect(parseHerdrCommand("start cuento codex").kind).toBe("error");
-    expect(parseHerdrCommand("start cuento --pane nope").kind).toBe("error");
-    expect(parseHerdrCommand("start cuento --timeout 10").kind).toBe("error");
-    expect(parseHerdrCommand("start cuento --kind").kind).toBe("error");
+    expect(parseHerdrCommand("start cuento --kind codex").kind).toBe("error");
+    expect(parseHerdrCommand("start cuento codex claude").kind).toBe("error");
+    expect(parseHerdrCommand("start cuento w7:p2 ~/x").kind).toBe("error");
   });
 });

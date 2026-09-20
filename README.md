@@ -67,10 +67,11 @@ From any OpenClaw chat surface:
 /herdr read w6:p1 60             more output (1–400 lines)
 /herdr watch w6:p1               wake me when the current task settles
 /herdr unwatch w6:p1
-/herdr start cuento --kind codex --cwd ~/app    open a pane and start Codex there as "cuento"
+/herdr start cuento codex ~/app  open a new pane in ~/app and start Codex there as "cuento"
+/herdr start cuento claude w7:p2 start Claude in the idle shell pane w7:p2
 ```
 
-`start` follows `herdr agent start <name> --kind <kind> --pane <id> [--timeout <ms>] [-- <agent args>]`. When `--pane` is omitted it reuses an idle shell pane already labelled with the name, otherwise it opens a new tab in the focused workspace (`--cwd` sets its directory). From then on the name is the target: `/herdr cuento: write the tests`. On a remote machine it needs `remote.allowSend`, like any other input.
+`start` takes the name, an optional kind (default `claude`) and either an idle shell pane id or a directory for a new pane, in any order. With neither it reuses an idle shell pane already labelled with the name, otherwise it opens a new tab in the focused workspace. The `herdr_start` tool additionally accepts a startup timeout and native agent arguments, like `herdr agent start … -- <args>`. From then on the name is the target: `/herdr cuento: write the tests`. On a remote machine it needs `remote.allowSend`, like any other input.
 
 A target is resolved in strict order: Herdr pane id (`w6:p1`), terminal id, Herdr agent name (`reviewer`), then agent kind (`claude`, `codex`). More than one match at a level is refused with the candidates listed; the plugin never guesses.
 
