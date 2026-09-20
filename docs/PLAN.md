@@ -124,8 +124,8 @@ Decisions:
   socket path is resolved once per machine with `ssh <target> herdr status
   server` and cached. `@server` must match a profile label (unique,
   case-sensitive) or id; watches store the profile id and display the label.
-- `herdr --machine` remains the human CLI and an optional fallback transport
-  (blocking `agent wait`) when SSH stdio is unavailable.
+- `herdr --machine` remains the human CLI; the plugin uses `herdr` only for
+  `machine list --json`.
 - Target grammar `selector[@server]` stays: `w1:p1@buildbox`, `reviewer@buildbox`,
   `claude@buildbox`. No suffix means `local`.
 - Per-machine `allowSend` (default `false`): remote reads on by default,
@@ -135,15 +135,15 @@ Decisions:
   is just a closed subscription → reconnect with backoff → reconcile.
 
 Tasks:
-- [ ] Config: `herdrBin`, `sshBin`, `remote.enabled` (default true), `remote.allowSend: string[]` of labels/ids; keep `socketPath` for local.
-- [ ] Machine catalog: `herdr machine list --json` (short cache) → `local` + enabled machines; resolve and cache each remote socket path; unknown alias error lists known machines.
-- [ ] Grammar/targets: `selector@server`, split on the last `@`, server-scoped resolution with the existing precedence.
-- [ ] Transport: connection factory in `HerdrClient`; `SshStdioConnection` spawning `ssh … socat - UNIX-CONNECT:<sock>` with argv arrays (no shell interpolation of user input), python fallback, ControlMaster options, per-request and subscription timeouts, exit-code and stderr mapping.
-- [ ] Runtime: `/herdr list` grouped by machine with copyable `w1:p1@buildbox` refs; status/read/send/watch/unwatch carry `serverId`; enforce `allowSend`.
-- [ ] Store/watcher: `serverId` in `WatchRecord` (migrate old records to `local`); one client per server; subscriptions keyed by server + pane.
-- [ ] Health: `ping` per machine on list and after subscription failures; `down` shown in the list, remote watches stay pending.
-- [ ] Tests: fake `ssh` script that proxies to the fake Herdr server; unknown machine; same pane id on two machines; ambiguous names across machines; `allowSend` refusal; SSH drop → reconnect → reconcile; migration.
-- [ ] Docs: README "Remote machines": `herdr machine add <user>@<host> --label buildbox`, SSH key loaded for non-interactive use, socket ownership caveat, `remote.allowSend`, grammar.
+- [x] Config: `herdrBin`, `sshBin`, `remote.enabled` (default true), `remote.allowSend: string[]` of labels/ids; keep `socketPath` for local.
+- [x] Machine catalog: `herdr machine list --json` (short cache) → `local` + enabled machines; resolve and cache each remote socket path; unknown alias error lists known machines.
+- [x] Grammar/targets: `selector@server`, split on the last `@`, server-scoped resolution with the existing precedence.
+- [x] Transport: connection factory in `HerdrClient`; `SshStdioConnection` spawning `ssh … socat - UNIX-CONNECT:<sock>` with argv arrays (no shell interpolation of user input), python fallback, ControlMaster options, per-request and subscription timeouts, exit-code and stderr mapping.
+- [x] Runtime: `/herdr list` grouped by machine with copyable `w1:p1@buildbox` refs; status/read/send/watch/unwatch carry `serverId`; enforce `allowSend`.
+- [x] Store/watcher: `serverId` in `WatchRecord` (migrate old records to `local`); one client per server; subscriptions keyed by server + pane.
+- [x] Health: `ping` per machine on list and after subscription failures; `down` shown in the list, remote watches stay pending.
+- [x] Tests: fake `ssh` script that proxies to the fake Herdr server; unknown machine; same pane id on two machines; ambiguous names across machines; `allowSend` refusal; SSH drop → reconnect → reconcile; migration.
+- [x] Docs: README "Remote machines": `herdr machine add <user>@<host> --label buildbox`, SSH key loaded for non-interactive use, socket ownership caveat, `remote.allowSend`, grammar.
 - [ ] Live validation from Telegram against the saved machine: `/herdr list`, `/herdr status w1:p2@buildbox`, a watch on a remote Codex that finishes, SSH drop and recovery.
 
 ### M3 — Operator ergonomics

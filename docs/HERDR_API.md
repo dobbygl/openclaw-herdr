@@ -31,3 +31,19 @@ Detection rules live in `~/.local/state/herdr/agent-detection/remote/<agent>.tom
 ## Not used yet
 
 `pane.send_input` / `agent.send_keys` (answering menus), `agent.start`, `pane.split`, `workspace.create`, `pane.report_agent` (external lifecycle reporting), `pane.output_matched` subscriptions.
+
+## Remote machines
+
+The socket API above has no machine routing: everything on this page is
+answered by whichever Herdr process is on the other end of the socket, local
+or remote — there is no `machine` parameter to `agent.list`, `agent.get` or
+`events.subscribe`. `herdr --machine <label-or-id> …` is Herdr's own remote
+CLI; it forwards a command over SSH to the named machine and prints the
+result, but it does not carry these methods verbatim — no `events.subscribe`,
+only a blocking `agent wait`, and 6–12 s per call.
+
+So for a remote machine this plugin does not shell out to `herdr --machine`
+at all: it opens `ssh <target> socat - UNIX-CONNECT:<sock>` to the remote
+Herdr socket and speaks the same protocol described above directly over that
+connection, reusing every method on this page including `events.subscribe`.
+Details and measured numbers: [ADR 0004](adr/0004-remote-machines-over-ssh-stdio.md) and `src/herdr/ssh-stdio.ts`.

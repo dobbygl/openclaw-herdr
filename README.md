@@ -9,7 +9,7 @@
   [![OpenClaw plugin](https://img.shields.io/badge/OpenClaw-plugin-orange?style=flat-square)](https://docs.openclaw.ai/cli/plugins)
   [![License](https://img.shields.io/badge/License-MIT-blue?style=flat-square)](LICENSE)
 
-  [Features](#features) • [Installation](#installation) • [Usage](#usage) • [How it works](#how-it-works) • [Configuration](#configuration)
+  [Features](#features) • [Installation](#installation) • [Usage](#usage) • [Remote machines](#remote-machines) • [How it works](#how-it-works) • [Configuration](#configuration)
 </div>
 
 <p align="center"><img src="assets/hero.png" width="800" alt="A goat kid herds a row of terminal-window sheep while a lobster waves from a chat bubble"></p>
@@ -19,7 +19,7 @@
 It replaces screen scraping with Herdr's own agent lifecycle API, so it does not care which version of Herdr, Claude Code or Codex you run today.
 
 > [!NOTE]
-> Status: prototype under live testing (milestone M1.5). `/herdr list`, `/herdr status`, `/herdr read` and `/herdr <pane>: <prompt>` are verified from Telegram against a real Gateway. The first live run showed that queued context plus a heartbeat does not reach the chat on its own, so notifications now run a `chat.send` turn; that retest is next. See [docs/PLAN.md](docs/PLAN.md).
+> Status: prototype under live testing. `/herdr list`, `/herdr status`, `/herdr read` and `/herdr <pane>: <prompt>` are verified from Telegram against a real Gateway (milestone M1.5); the first live run showed that queued context plus a heartbeat does not reach the chat on its own, so notifications now run a `chat.send` turn, and that retest is next. Remote machines (milestone M2.5 — discovery, the `selector@server` grammar, the SSH stdio transport, `remote.allowSend`) are implemented but not yet exercised live against a saved machine. See [docs/PLAN.md](docs/PLAN.md).
 
 ## Features
 
@@ -29,7 +29,7 @@ It replaces screen scraping with Herdr's own agent lifecycle API, so it does not
 - **Blocked-aware** — if the agent is waiting at an approval or question, the plugin shows you the prompt instead of typing over it.
 - **Agent tools too** — `herdr_list`, `herdr_send`, `herdr_read`, `herdr_watch` and `herdr_status` let the OpenClaw agent orchestrate panes on its own.
 - **Survives restarts** — watches live in a small JSON file and are re-subscribed when the Gateway comes back.
-- **Zero runtime dependencies** beyond `typebox`; talks to Herdr over its local Unix socket only.
+- **Zero runtime dependencies** beyond `typebox`; talks to the local Herdr over its Unix socket, and to remote Herdr machines over SSH stdio (see [Remote machines](#remote-machines)).
 
 ## Installation
 
@@ -84,6 +84,66 @@ Pane output is compacted for phones before it reaches the chat: trailing whitesp
 > [!TIP]
 > Agents started with `claude` or `codex --yolo` in bypass mode will run whatever you send. Keep the `/herdr` command restricted to authorized senders (the default) and prefer normal permission modes for anything that touches production.
 
+## Remote machines
+
+Herdr itself can reach agents on a machine other than the one running
+OpenClaw. This plugin does not configure those machines — it discovers
+whatever Herdr already knows about and speaks to them directly.
+
+**Link a machine, once, in Herdr:**
+
+```bash
+herdr machine add <user>@<host> --label buildbox
+```
+
+That first run is interactive. After that the plugin picks the machine up
+automatically from `herdr machine list` — nothing is duplicated in
+`openclaw.json`.
+
+Two things must hold for the plugin to reach it without a prompt:
+
+- The SSH user (`<user>` above) must own the remote Herdr socket, or at least
+  be able to read it — it is mode `0600`. `herdr machine add` requires the
+  same user, so if that worked, this will too.
+- An SSH key for that user must already be loaded (`ssh-add`) before the
+  Gateway starts. The plugin's SSH options are fixed and non-negotiable:
+  `BatchMode=yes` means it can never wait on a password prompt, and
+  `StrictHostKeyChecking=yes` means the host key must already be trusted
+  (which the interactive `herdr machine add` above takes care of). The
+  remote host also needs `socat` installed, which is what carries the Herdr
+  socket protocol over the SSH session.
+
+**Targeting a machine** — add `@<label>` (or the machine's id) to any
+selector:
+
+```text
+/herdr list                            local agents, then one group per machine
+/herdr status w1:p1@buildbox           state of a pane on "buildbox"
+/herdr w1:p1@buildbox: run the tests   send a prompt to that pane
+```
+
+No suffix means the local host. `@buildbox` must match a machine label
+(case-sensitive) or id exactly; an unknown one is refused with the list of
+machines the plugin actually knows about.
+
+Remote machines are **read-only by default**: `list`, `status`, `read` and
+`watch` all work, but a prompt to a remote pane is refused —
+`I did not send anything to **w1:p1@buildbox**: buildbox is read-only.` —
+until its label or id is added to `remote.allowSend` in the plugin config.
+
+A machine that cannot be reached (asleep, SSH down, key not loaded) shows as
+`down` in `/herdr list` with a short reason instead of stalling the whole
+list:
+
+```text
+Machine lab: down — ssh authentication failed
+```
+
+Remote watches behave exactly like local ones: one event subscription per
+watched pane, reconciled through `agent.get`. An SSH drop is just a closed
+subscription — the plugin reconnects with backoff and reconciles rather than
+guessing what happened while it was gone.
+
 ## How it works
 
 ```text
@@ -95,6 +155,7 @@ Telegram / WebChat ──► OpenClaw Gateway ──(in-process)──► opencl
 3. A watch record is stored and a `pane.agent_status_changed` subscription is opened for that pane.
 4. On `idle | done | blocked` the plugin confirms with `agent.get` (same occupant, `state_change_seq` advanced), reads the last lines, stores a pending delivery, then runs a chat turn in the originating session through the Gateway `chat.send` method with `deliver: true`. A next-turn injection is kept as durable context and a heartbeat is requested as a best-effort extra. Failed deliveries are retried until the watch deadline.
 5. Several chats may watch the same pane; each gets its own notification and `unwatch` only removes the caller's watch.
+6. A `@server` target talks to that machine's socket the same way, except the JSON lines travel over `ssh <target> socat - UNIX-CONNECT:<sock>` instead of the local socket. SSH's own `ControlMaster` multiplexing keeps one authenticated session per machine warm, so only the first call pays for a fresh handshake — measured ≈0.6 s per request there afterwards, against 6–12 s through Herdr's own `herdr --machine`.
 
 Herdr classifies agents with detection rules it updates by itself; this plugin never parses terminal text to decide anything. Details in [docs/ARCHITECTURE.md](docs/ARCHITECTURE.md) and [docs/HERDR_API.md](docs/HERDR_API.md).
 
@@ -104,12 +165,16 @@ Optional keys under `plugins.entries.herdr.config` in `openclaw.json`:
 
 | Key | Default | Purpose |
 | --- | --- | --- |
-| `socketPath` | `$HERDR_SOCKET_PATH` or `~/.config/herdr/herdr.sock` | Herdr server socket |
-| `requestTimeoutMs` | `5000` | Timeout per Herdr request |
+| `socketPath` | `$HERDR_SOCKET_PATH` or `~/.config/herdr/herdr.sock` | Local Herdr server socket |
+| `requestTimeoutMs` | `5000` | Timeout per **local** Herdr request; remote requests use their own, larger fixed budget |
 | `watchTimeoutMinutes` | `720` | Ceiling for a watch that never settles; undelivered notifications are retried until then |
 | `openclawBin` | `openclaw` on `PATH` | OpenClaw CLI used for `chat.send` delivery when no in-process Gateway context is available |
 | `deliveryTimeoutMs` | `60000` | Timeout for one delivery attempt |
 | `readLines` | `40` | Lines of pane output included in notifications and `/herdr read` |
+| `herdrBin` | `herdr` on `PATH` | `herdr` executable used to list saved machines (`herdr machine list --json`) and resolve their sockets |
+| `sshBin` | `ssh` on `PATH` | `ssh` executable used to reach remote machines |
+| `remote.enabled` | `true` | Whether remote machines are discovered at all; `false` leaves only the local host |
+| `remote.allowSend` | `[]` | Machine labels or ids allowed to receive prompts and key presses; every other machine stays read-only |
 
 ## Development
 
