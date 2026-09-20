@@ -36,6 +36,17 @@ export function resolveTarget(agents: AgentInfo[], selector?: string): TargetRes
     };
   }
   const wanted = selector.trim().toLowerCase();
+  // A selector still carrying "@server" was not stripped by the caller: this
+  // function only resolves a bare selector on one machine's agent list, so
+  // it never matches here rather than guessing which machine was meant.
+  if (wanted.includes("@")) {
+    return {
+      ok: false,
+      reason: "not_found",
+      message: `${selector} looks like a selector@server target; machine suffixes are resolved per machine.`,
+      candidates: [],
+    };
+  }
   for (const level of LEVELS) {
     const matches = live.filter((agent) => {
       const value = level.value(agent);
@@ -64,4 +75,15 @@ export function resolveTarget(agents: AgentInfo[], selector?: string): TargetRes
 
 export function describeCandidates(agents: AgentInfo[]): string {
   return agents.map((agent) => `${agent.pane_id} (${agent.name ?? agent.agent ?? "?"})`).join(", ");
+}
+
+/**
+ * Thin convenience over {@link resolveTarget} for a `{ selector, server }`
+ * ref (e.g. from `parseTargetRef`). It strips nothing and does not act on
+ * `server` itself: picking the right machine's agent list for `server` is
+ * the runtime's job, this just resolves the bare selector against whatever
+ * agent list is passed in.
+ */
+export function resolveTargetRef(agents: AgentInfo[], ref: { selector?: string; server?: string }): TargetResolution {
+  return resolveTarget(agents, ref.selector);
 }
