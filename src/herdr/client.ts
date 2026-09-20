@@ -1,7 +1,7 @@
 import net from "node:net";
 import os from "node:os";
 import path from "node:path";
-import { LineDecoder, encodeRequest } from "./framing.js";
+import { LineDecoder, LineTooLongError, encodeRequest } from "./framing.js";
 import type {
   AgentInfo,
   AgentPromptWaitOptions,
@@ -32,13 +32,39 @@ export class HerdrTransportError extends Error {
 
 export interface HerdrClientOptions {
   socketPath?: string;
+  /** Transport timeout for a plain request. Server-side waits get their own budget. */
   requestTimeoutMs?: number;
+  /** Added on top of a server-side `timeout_ms` before the transport gives up. */
+  waitGraceMs?: number;
+  /** Ceiling for one JSON line from the server; see `LineDecoder`. */
+  maxLineLength?: number;
+  /** How long `Subscription.ready` waits for `subscription_started`. */
+  subscribeAckTimeoutMs?: number;
+}
+
+export interface HerdrRequestOptions {
+  /**
+   * Overrides the transport timeout for this one request. Use `0` (or a
+   * non-finite value) for no transport timeout at all.
+   */
+  requestTimeoutMs?: number;
+}
+
+export interface SubscribeOptions {
+  /** Overrides `subscribeAckTimeoutMs` for this subscription. `0` disables it. */
+  ackTimeoutMs?: number;
 }
 
 export interface Subscription {
   close(): void;
   /** Resolves when the server closes the stream or the socket errors. */
   readonly closed: Promise<void>;
+  /**
+   * Resolves on the server's `subscription_started` ack and rejects on an error
+   * ack, a socket error, an early close, or an ack timeout. On timeout the
+   * socket is destroyed, so `closed` fires too and callers can reconnect.
+   */
+  readonly ready: Promise<void>;
 }
 
 export function defaultSocketPath(env: NodeJS.ProcessEnv = process.env): string {
@@ -62,33 +88,52 @@ function nextId(): string {
 export class HerdrClient {
   readonly socketPath: string;
   readonly requestTimeoutMs: number;
+  readonly waitGraceMs: number;
+  readonly maxLineLength: number | undefined;
+  readonly subscribeAckTimeoutMs: number;
 
   constructor(options: HerdrClientOptions = {}) {
     this.socketPath = options.socketPath ?? defaultSocketPath();
     this.requestTimeoutMs = options.requestTimeoutMs ?? 5_000;
+    this.waitGraceMs = options.waitGraceMs ?? 2_000;
+    this.maxLineLength = options.maxLineLength;
+    this.subscribeAckTimeoutMs = options.subscribeAckTimeoutMs ?? 5_000;
   }
 
-  async request<T = unknown>(method: string, params: unknown = {}): Promise<T> {
+  async request<T = unknown>(method: string, params: unknown = {}, options: HerdrRequestOptions = {}): Promise<T> {
     const id = nextId();
+    const timeoutMs = options.requestTimeoutMs ?? this.requestTimeoutMs;
     return new Promise<T>((resolve, reject) => {
       const socket = net.createConnection(this.socketPath);
-      const decoder = new LineDecoder();
+      const decoder = this.#decoder();
       let settled = false;
       const finish = (fn: () => void) => {
         if (settled) return;
         settled = true;
-        clearTimeout(timer);
+        if (timer) clearTimeout(timer);
         socket.destroy();
         fn();
       };
-      const timer = setTimeout(
-        () => finish(() => reject(new HerdrTransportError(`Herdr ${method} timed out after ${this.requestTimeoutMs}ms`))),
-        this.requestTimeoutMs,
-      );
+      // An unbounded server-side wait has no transport timeout: only the socket
+      // closing (or the caller) can end it.
+      const timer =
+        timeoutMs > 0 && Number.isFinite(timeoutMs)
+          ? setTimeout(
+              () => finish(() => reject(new HerdrTransportError(`Herdr ${method} timed out after ${timeoutMs}ms`))),
+              timeoutMs,
+            )
+          : undefined;
       socket.setEncoding("utf8");
       socket.on("connect", () => socket.write(encodeRequest(id, method, params)));
       socket.on("data", (chunk: string) => {
-        for (const line of decoder.push(chunk)) {
+        let lines: string[];
+        try {
+          lines = decoder.push(chunk);
+        } catch (cause) {
+          finish(() => reject(framingError(method, cause)));
+          return;
+        }
+        for (const line of lines) {
           let parsed: unknown;
           try {
             parsed = JSON.parse(line);
@@ -117,18 +162,58 @@ export class HerdrClient {
     subscriptions: SubscriptionSpec[],
     onEvent: (event: SubscriptionEvent) => void,
     onError?: (error: Error) => void,
+    options: SubscribeOptions = {},
   ): Subscription {
+    const ackTimeoutMs = options.ackTimeoutMs ?? this.subscribeAckTimeoutMs;
     const socket = net.createConnection(this.socketPath);
-    const decoder = new LineDecoder();
+    const decoder = this.#decoder();
     let acknowledged = false;
+    let readySettled = false;
+
     let resolveClosed!: () => void;
     const closed = new Promise<void>((resolve) => {
       resolveClosed = resolve;
     });
+    let resolveReady!: () => void;
+    let rejectReady!: (error: Error) => void;
+    const ready = new Promise<void>((resolve, reject) => {
+      resolveReady = resolve;
+      rejectReady = reject;
+    });
+    // Callers may ignore `ready` (the watcher only uses `onError`/`closed`).
+    // Attaching a sink here keeps Node from reporting an unhandled rejection
+    // while still handing the real, rejecting promise to callers.
+    void ready.catch(() => {});
+
+    let ackTimer: NodeJS.Timeout | undefined;
+    const clearAckTimer = () => {
+      if (ackTimer) clearTimeout(ackTimer);
+      ackTimer = undefined;
+    };
+    const settleReady = (error?: Error) => {
+      clearAckTimer();
+      if (readySettled) return;
+      readySettled = true;
+      if (error) rejectReady(error);
+      else resolveReady();
+    };
+    const fail = (error: Error) => {
+      settleReady(error);
+      onError?.(error);
+    };
+
     socket.setEncoding("utf8");
     socket.on("connect", () => socket.write(encodeRequest(nextId(), "events.subscribe", { subscriptions })));
     socket.on("data", (chunk: string) => {
-      for (const line of decoder.push(chunk)) {
+      let lines: string[];
+      try {
+        lines = decoder.push(chunk);
+      } catch (cause) {
+        fail(framingError("events.subscribe", cause));
+        socket.destroy();
+        return;
+      }
+      for (const line of lines) {
         let parsed: unknown;
         try {
           parsed = JSON.parse(line);
@@ -139,9 +224,17 @@ export class HerdrClient {
           acknowledged = true;
           const outcome = interpretResponse(parsed);
           if (!outcome.ok) {
-            onError?.(new HerdrRequestError(outcome.error));
+            fail(new HerdrRequestError(outcome.error));
             socket.destroy();
+            continue;
           }
+          const type = isRecord(outcome.result) ? outcome.result.type : undefined;
+          if (typeof type === "string" && type !== "subscription_started") {
+            fail(new HerdrTransportError(`Herdr answered events.subscribe with "${type}" instead of subscription_started`));
+            socket.destroy();
+            continue;
+          }
+          settleReady();
           continue;
         }
         if (isRecord(parsed) && typeof parsed.event === "string" && isRecord(parsed.data)) {
@@ -149,55 +242,118 @@ export class HerdrClient {
         }
       }
     });
-    socket.on("error", (cause) => onError?.(new HerdrTransportError(`Herdr subscription error: ${cause.message}`, { cause })));
-    socket.on("close", () => resolveClosed());
+    socket.on("error", (cause) =>
+      fail(new HerdrTransportError(`Herdr subscription error: ${cause.message}`, { cause })),
+    );
+    socket.on("close", () => {
+      clearAckTimer();
+      settleReady(new HerdrTransportError("Herdr closed the subscription before acknowledging it"));
+      resolveClosed();
+    });
+
+    if (ackTimeoutMs > 0 && Number.isFinite(ackTimeoutMs)) {
+      ackTimer = setTimeout(() => {
+        fail(new HerdrTransportError(`Herdr did not acknowledge the subscription within ${ackTimeoutMs}ms`));
+        socket.destroy();
+      }, ackTimeoutMs);
+    }
+
     return {
       close: () => socket.destroy(),
       closed,
+      ready,
     };
   }
 
   // ---- Typed helpers for the methods the plugin actually uses ----
 
-  ping(): Promise<PingResult> {
-    return this.request<PingResult>("ping");
+  async ping(): Promise<PingResult> {
+    const result = await this.request<unknown>("ping");
+    if (!isRecord(result) || typeof result.version !== "string" || typeof result.protocol !== "number") {
+      throw new HerdrTransportError("Herdr ping did not return a version and protocol");
+    }
+    return result as unknown as PingResult;
   }
 
+  /** Malformed rows are dropped rather than faked: a pane we cannot address is not a target. */
   async listAgents(): Promise<AgentInfo[]> {
-    const result = await this.request<{ agents?: AgentInfo[] }>("agent.list");
-    return Array.isArray(result.agents) ? result.agents : [];
+    const result = await this.request<unknown>("agent.list");
+    const agents = isRecord(result) && Array.isArray(result.agents) ? result.agents : [];
+    const normalized: AgentInfo[] = [];
+    for (const entry of agents) {
+      const agent = normalizeAgentInfo(entry);
+      if (agent) normalized.push(agent);
+    }
+    return normalized;
   }
 
   async getAgent(target: string): Promise<AgentInfo> {
-    const result = await this.request<{ agent?: AgentInfo } & Partial<AgentInfo>>("agent.get", { target });
-    return (result.agent ?? result) as AgentInfo;
+    const result = await this.request<unknown>("agent.get", { target });
+    const payload = isRecord(result) && isRecord(result.agent) ? result.agent : result;
+    const agent = normalizeAgentInfo(payload);
+    if (!agent) throw new HerdrTransportError(`Herdr agent.get returned no usable agent for ${target}`);
+    return agent;
   }
 
   async readAgent(target: string, options: { source?: ReadSource; lines?: number } = {}): Promise<PaneReadResult> {
-    const result = await this.request<{ read: PaneReadResult }>("agent.read", {
+    const result = await this.request<unknown>("agent.read", {
       target,
       source: options.source ?? "recent",
       ...(options.lines !== undefined ? { lines: options.lines } : {}),
       format: "text",
       strip_ansi: true,
     });
-    return result.read;
+    const read = isRecord(result) ? result.read : undefined;
+    if (!isRecord(read) || typeof read.text !== "string") {
+      throw new HerdrTransportError(`Herdr agent.read returned no text for ${target}`);
+    }
+    return read as unknown as PaneReadResult;
   }
 
-  prompt(target: string, text: string, wait?: AgentPromptWaitOptions): Promise<unknown> {
-    return this.request("agent.prompt", { target, text, ...(wait ? { wait } : {}) });
+  /**
+   * `wait` makes the server hold the connection for up to `wait.timeout_ms`, so
+   * the transport budget is stretched to cover it; without a `timeout_ms` the
+   * wait is unbounded and gets no transport timeout at all.
+   */
+  prompt(
+    target: string,
+    text: string,
+    wait?: AgentPromptWaitOptions,
+    options: HerdrRequestOptions = {},
+  ): Promise<unknown> {
+    return this.request(
+      "agent.prompt",
+      { target, text, ...(wait ? { wait } : {}) },
+      wait ? this.#waitBudget(wait.timeout_ms, options) : options,
+    );
   }
 
-  waitFor(target: string, until: AgentStatus[], timeoutMs?: number): Promise<unknown> {
-    return this.request("agent.wait", {
-      target,
-      until,
-      ...(timeoutMs !== undefined ? { timeout_ms: timeoutMs } : {}),
-    });
+  /** Server-owned wait; same budget rule as `prompt` with `wait`. */
+  waitFor(
+    target: string,
+    until: AgentStatus[],
+    timeoutMs?: number,
+    options: HerdrRequestOptions = {},
+  ): Promise<unknown> {
+    return this.request(
+      "agent.wait",
+      { target, until, ...(timeoutMs !== undefined ? { timeout_ms: timeoutMs } : {}) },
+      this.#waitBudget(timeoutMs, options),
+    );
   }
 
   async explain(target: string): Promise<Record<string, unknown>> {
     return this.request<Record<string, unknown>>("agent.explain", { target });
+  }
+
+  #decoder(): LineDecoder {
+    return new LineDecoder(this.maxLineLength !== undefined ? { maxLineLength: this.maxLineLength } : {});
+  }
+
+  #waitBudget(timeoutMs: number | null | undefined, options: HerdrRequestOptions): HerdrRequestOptions {
+    if (options.requestTimeoutMs !== undefined) return { requestTimeoutMs: options.requestTimeoutMs };
+    if (timeoutMs === undefined || timeoutMs === null) return { requestTimeoutMs: 0 };
+    return { requestTimeoutMs: Math.max(this.requestTimeoutMs, timeoutMs + this.waitGraceMs) };
   }
 }
 
@@ -214,6 +370,32 @@ function interpretResponse(parsed: unknown): ResponseOutcome {
   }
   if ("result" in parsed) return { ok: true, result: parsed.result };
   return { ok: false, error: { code: "malformed_response", message: "Herdr response had neither result nor error" } };
+}
+
+function framingError(method: string, cause: unknown): HerdrTransportError {
+  if (cause instanceof LineTooLongError) {
+    return new HerdrTransportError(`Herdr sent an oversized line for ${method}: ${cause.message}`, { cause });
+  }
+  return new HerdrTransportError(`Herdr framing failed for ${method}: ${(cause as Error).message}`, { cause });
+}
+
+const AGENT_STATUSES: readonly string[] = ["idle", "working", "blocked", "done", "unknown"];
+
+/** Anything Herdr does not classify is `unknown`; never treat it as finished. */
+export function normalizeAgentStatus(value: unknown): AgentStatus {
+  return typeof value === "string" && AGENT_STATUSES.includes(value) ? (value as AgentStatus) : "unknown";
+}
+
+/**
+ * Boundary check for one `agents[]` row. Unknown extra fields are kept as-is
+ * (Herdr's compatibility rule), but a row we could not address later - no
+ * string `pane_id`/`terminal_id` - is rejected here instead of downstream.
+ */
+export function normalizeAgentInfo(value: unknown): AgentInfo | undefined {
+  if (!isRecord(value)) return undefined;
+  if (typeof value.pane_id !== "string" || value.pane_id.length === 0) return undefined;
+  if (typeof value.terminal_id !== "string" || value.terminal_id.length === 0) return undefined;
+  return { ...value, agent_status: normalizeAgentStatus(value.agent_status) } as unknown as AgentInfo;
 }
 
 export function isRecord(value: unknown): value is Record<string, unknown> {

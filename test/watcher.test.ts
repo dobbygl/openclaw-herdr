@@ -43,7 +43,7 @@ class FakeClient implements WatcherClient {
     });
     const entry: FakeSubscription = { id: this.#nextId++, paneId, closed: false, onEvent, resolveClosed };
     this.subscriptions.push(entry);
-    const handle: Subscription & { ready?: Promise<void> } = {
+    const handle: Omit<Subscription, "ready"> & { ready?: Promise<void> } = {
       close: () => {
         if (entry.closed) return;
         entry.closed = true;
@@ -52,7 +52,7 @@ class FakeClient implements WatcherClient {
       closed,
     };
     if (this.provideReady) handle.ready = Promise.resolve();
-    return handle;
+    return handle as Subscription;
   }
 
   open(paneId?: string): FakeSubscription[] {

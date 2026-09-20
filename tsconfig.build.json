@@ -1,0 +1,8 @@
+{
+  // Emit only what ships: `dist/src` for the plugin entry and `dist/scripts`
+  // for the smoke check. `tsconfig.json` type-checks the tests too, but they
+  // must not land in dist. `rootDir` stays "." so both output paths keep the
+  // layout openclaw.plugin.json and the `smoke` script expect.
+  "extends": "./tsconfig.json",
+  "include": ["src/**/*.ts", "scripts/**/*.ts"]
+}

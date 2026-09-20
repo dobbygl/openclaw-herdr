@@ -3,7 +3,7 @@ import type { HostApi, HostTool, HostToolContext, HostToolResult } from "./host-
 import { describeFailure, type HerdrRuntime } from "./runtime.js";
 
 function text(value: string, details?: unknown): HostToolResult {
-  return { content: [{ type: "text", text: value }], ...(details !== undefined ? { details } : {}) };
+  return { content: [{ type: "text", text: value }], details };
 }
 
 function caller(ctx: HostToolContext) {

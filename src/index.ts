@@ -8,7 +8,11 @@ import { registerHerdrTools } from "./openclaw/tools.js";
 
 export function registerHerdrPlugin(api: HostApi): HerdrRuntime {
   const config = readPluginConfig(api.pluginConfig);
-  const runtime = new HerdrRuntime(config, new OpenClawNotifier(api), api.logger);
+  const notifier = new OpenClawNotifier(api, {
+    ...(config.openclawBin ? { openclawBin: config.openclawBin } : {}),
+    deliveryTimeoutMs: config.deliveryTimeoutMs,
+  });
+  const runtime = new HerdrRuntime(config, notifier, api.logger);
   api.registerService({
     id: "herdr-watcher",
     start: (ctx) => runtime.start(ctx.stateDir, ctx.logger),
@@ -25,6 +29,6 @@ export default definePluginEntry({
   description:
     "Drive Codex, Claude Code and other coding agents running in Herdr panes from OpenClaw: send prompts, read output, get woken when they finish or block.",
   register(api) {
-    registerHerdrPlugin(api as unknown as HostApi);
+    registerHerdrPlugin(api);
   },
 });

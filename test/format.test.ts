@@ -39,8 +39,10 @@ const watch = (over: Partial<WatchRecord> = {}): WatchRecord => ({
   createdAt: "2026-01-01T00:00:00.000Z",
   deadlineAt: "2026-01-01T12:00:00.000Z",
   seqAtStart: 1,
+  sawWorking: true,
+  notificationSeq: 1,
   ...over,
-});
+}) as WatchRecord;
 
 describe("formatAgentLine", () => {
   it("shows icon, pane, label, state, title and shortened cwd", () => {
@@ -166,10 +168,10 @@ describe("shortenPath", () => {
 
 describe("formatSendAccepted", () => {
   it("names the pane, the watch state and the prompt", () => {
-    expect(formatSendAccepted(agent({ name: "reviewer" }), "run  the tests", true)).toBe(
+    expect(formatSendAccepted(agent({ name: "reviewer" }), "run  the tests", "watching")).toBe(
       ["Sent to **w6:p1** (reviewer).", "I will tell you when it finishes or needs input.", "> run the tests"].join("\n"),
     );
-    expect(formatSendAccepted(agent(), "go", false)).toContain("Not watching");
+    expect(formatSendAccepted(agent(), "go", "off")).toContain("Not watching");
   });
 });
 
