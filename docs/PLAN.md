@@ -48,6 +48,39 @@ fields are ignorable. Building on that removes all three failure classes.
 - [ ] Confirm `agent.prompt` on Claude Code 2.1.278 submits in one shot (bracketed paste + Enter) with a multi-line prompt.
 - [ ] Log every Herdr error code seen (`agent_blocked`, `agent_prompt_stalled`, `timeout`, ...) into docs/HERDR_API.md.
 
+### M1.5 — Reliability hardening (from the 2026-09-20 code review)
+
+Source: [docs/reviews/2026-09-20-code-review.es.md](reviews/2026-09-20-code-review.es.md) (Spanish, verbatim). Eleven findings, five reproduced with fakes. Verdict: architecture is right, the asynchronous state model is not yet trustworthy for unattended use. Work is split into three independent streams by file ownership.
+
+Stream A — watcher core (`watcher.ts`, `watch-store.ts`, `runtime.ts` send/watch/unwatch):
+- [ ] F1 send-before-subscribe loss window: subscribe and confirm first, then prompt, then reconcile with `agent.get` (`state_change_seq` before/after); never invent `working`; reconcile on start and reconnect.
+- [ ] F2 `working → unknown → idle` loses completion: persist `sawWorking` separately from `lastStatus`.
+- [ ] F3 failed notifications: persist a pending delivery with backoff; remove the watch only after delivery.
+- [ ] F4 concurrent handlers: per-watch serialization, single exclusive settlement (`done` + `pane.exited` produced two notifications).
+- [ ] F5 unhandled rejections from `void` promises; `stop()` awaits in-flight work.
+- [ ] F7 replacing a watch leaks the old subscription.
+- [ ] F8 unknown status strings settle as "finished": validate at runtime.
+- [ ] F9 `seqAtStart`/`terminalId` unused: fence stale events and occupant changes via `agent.get`.
+- [ ] F10 one watch per pane overwrites other sessions: one watch per (pane, session); `unwatch` is caller-scoped.
+- [ ] Store validation: skip invalid records, quarantine corrupt JSON.
+- [ ] Send outcomes: "not sent" vs "sent, tracking failed" vs "uncertain".
+
+Stream B — targets, grammar, formatting (`targets.ts`, `parse.ts`, `compact.ts`, `format.ts`):
+- [ ] F6 exact-match ambiguity falls through to kind match: strict precedence pane id → terminal id → name → kind, ambiguity refused per level.
+- [ ] Parser: clamp `read` lines to 1–400, reserved commands with bad arguments become errors, not prompts.
+- [ ] Character budget and backtick escaping for pane blocks; long-line truncation.
+- [ ] Blocked notification text must not promise remote answering until it exists.
+
+Stream C — transport, notifier, typing (`client.ts`, `framing.ts`, `notifier.ts`, `host-api.ts`, `index.ts`, `tsconfig.json`):
+- [ ] Subscription `ready` ack with timeout; decoder buffer cap; wait-aware request timeouts; result shape validation.
+- [ ] Notifier checks `enqueued`, per-event idempotency keys, always requests a heartbeat.
+- [ ] `HostApi` derived from the installed SDK types instead of `as unknown as`.
+- [ ] Type-check tests; smoke fails loudly on subscription errors.
+
+After merge (owner: maintainer):
+- [ ] F11 live loop from Telegram: send, finish, repeated block, Gateway restart, recovery, with no extra user interaction.
+- [ ] Align README, messages and limits with what was verified; then continue to M2.
+
 ### M2 — Robustness
 
 - [ ] Reconnect subscription with backoff and re-sync state via `agent.get` after a Herdr server restart or live handoff.
