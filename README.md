@@ -19,7 +19,7 @@
 It replaces screen scraping with Herdr's own agent lifecycle API, so it does not care which version of Herdr, Claude Code or Codex you run today.
 
 > [!NOTE]
-> Status: prototype under live testing (milestone M1). `/herdr list`, `/herdr status` and `/herdr read` are verified from Telegram against a real Gateway; the send-and-notify loop is being validated next. See [docs/PLAN.md](docs/PLAN.md).
+> Status: prototype under live testing (milestone M1.5). `/herdr list`, `/herdr status`, `/herdr read` and `/herdr <pane>: <prompt>` are verified from Telegram against a real Gateway. The first live run showed that queued context plus a heartbeat does not reach the chat on its own, so notifications now run a `chat.send` turn; that retest is next. See [docs/PLAN.md](docs/PLAN.md).
 
 ## Features
 
@@ -64,12 +64,12 @@ From any OpenClaw chat surface:
 /herdr w6:p1: fix the failing test and explain the cause
 /herdr fix the failing test      same, when exactly one agent is running
 /herdr status w6:p1              state plus the last lines of output
-/herdr read w6:p1 60             more output
+/herdr read w6:p1 60             more output (1–400 lines)
 /herdr watch w6:p1               wake me when the current task settles
 /herdr unwatch w6:p1
 ```
 
-A target is a Herdr pane id (`w6:p1`), a Herdr agent name (`reviewer`), or the agent kind (`claude`, `codex`) when only one of that kind is running.
+A target is resolved in strict order: Herdr pane id (`w6:p1`), terminal id, Herdr agent name (`reviewer`), then agent kind (`claude`, `codex`). More than one match at a level is refused with the candidates listed; the plugin never guesses.
 
 When a watched agent settles, the originating chat gets a short message like:
 
@@ -79,7 +79,7 @@ Herdr: w6:p1 (claude) finished.
 ```
 followed by the tail of the pane. A `needs your input` variant appears when Herdr detects an approval or question UI.
 
-Pane output is compacted for phones before it reaches the chat: trailing whitespace, 120-column divider rules, the empty composer and the agent's footer hints are stripped, and only the last lines are kept. This is presentation only; agent state always comes from Herdr.
+Pane output is compacted for phones before it reaches the chat: trailing whitespace, 120-column divider rules, the empty composer and the agent's footer hints are stripped; blocks are capped at 3000 characters and 400 characters per line, and triple backticks in agent output are neutralized so they cannot close the code block. This is presentation only; agent state always comes from Herdr.
 
 > [!TIP]
 > Agents started with `claude` or `codex --yolo` in bypass mode will run whatever you send. Keep the `/herdr` command restricted to authorized senders (the default) and prefer normal permission modes for anything that touches production.
@@ -93,7 +93,8 @@ Telegram / WebChat ──► OpenClaw Gateway ──(in-process)──► opencl
 1. `/herdr …` is parsed into a small command; the target is resolved against a fresh `agent.list`.
 2. Prompts go through `agent.prompt`. Herdr refuses with `agent_blocked` if the agent is at a prompt, before any input is sent.
 3. A watch record is stored and a `pane.agent_status_changed` subscription is opened for that pane.
-4. On `working → idle | done | blocked`, the plugin reads the last lines, queues a next-turn injection for the originating session and asks the Gateway for a heartbeat so the message reaches you promptly.
+4. On `idle | done | blocked` the plugin confirms with `agent.get` (same occupant, `state_change_seq` advanced), reads the last lines, stores a pending delivery, then runs a chat turn in the originating session through the Gateway `chat.send` method with `deliver: true`. A next-turn injection is kept as durable context and a heartbeat is requested as a best-effort extra. Failed deliveries are retried until the watch deadline.
+5. Several chats may watch the same pane; each gets its own notification and `unwatch` only removes the caller's watch.
 
 Herdr classifies agents with detection rules it updates by itself; this plugin never parses terminal text to decide anything. Details in [docs/ARCHITECTURE.md](docs/ARCHITECTURE.md) and [docs/HERDR_API.md](docs/HERDR_API.md).
 
@@ -105,7 +106,9 @@ Optional keys under `plugins.entries.herdr.config` in `openclaw.json`:
 | --- | --- | --- |
 | `socketPath` | `$HERDR_SOCKET_PATH` or `~/.config/herdr/herdr.sock` | Herdr server socket |
 | `requestTimeoutMs` | `5000` | Timeout per Herdr request |
-| `watchTimeoutMinutes` | `720` | Ceiling for a watch that never settles |
+| `watchTimeoutMinutes` | `720` | Ceiling for a watch that never settles; undelivered notifications are retried until then |
+| `openclawBin` | `openclaw` on `PATH` | OpenClaw CLI used for `chat.send` delivery when no in-process Gateway context is available |
+| `deliveryTimeoutMs` | `60000` | Timeout for one delivery attempt |
 | `readLines` | `40` | Lines of pane output included in notifications and `/herdr read` |
 
 ## Development
