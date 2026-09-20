@@ -28,7 +28,14 @@ export type HerdrCommand =
   | { kind: "watch"; target: string }
   | { kind: "unwatch"; target: string }
   | { kind: "send"; target?: string; text: string }
+  | { kind: "start"; name: string; agentKind: string; cwd?: string }
   | { kind: "error"; message: string };
+
+/** Herdr's own rule for live agent names. An optional `@server` may follow. */
+const AGENT_NAME = /^[a-z][a-z0-9_-]{0,31}$/u;
+/** Kinds Herdr 0.9 can start; kept as a hint, Herdr is the authority. */
+export const KNOWN_AGENT_KINDS = ["claude", "codex", "gemini", "pi", "opencode", "copilot", "cursor", "kimi", "amp", "grok"] as const;
+const DEFAULT_AGENT_KIND = "claude";
 
 /**
  * A bare selector (pane id, terminal id, agent name or agent kind) may carry
@@ -122,6 +129,31 @@ export function parseHerdrCommand(rawArgs: string | undefined): HerdrCommand {
     return { kind: "read", target, lines };
   }
 
+  if (word === "start" || word === "new") {
+    const [rawName, ...more] = rest;
+    if (rawName === undefined) {
+      return error(`Usage: /herdr start <name> [kind] [cwd] — e.g. /herdr start reviewer codex ~/project (kind defaults to ${DEFAULT_AGENT_KIND}).`);
+    }
+    const at = rawName.lastIndexOf("@");
+    const bareName = at > 0 ? rawName.slice(0, at) : rawName;
+    const server = at > 0 ? rawName.slice(at + 1) : undefined;
+    if (!AGENT_NAME.test(bareName) || (server !== undefined && !new RegExp(`^${SERVER_SOURCE}$`, "u").test(server))) {
+      return error(`"${rawName}" is not a usable agent name: lowercase letters, digits, "_" or "-", up to 32 characters, optionally @machine.`);
+    }
+    let agentKind = DEFAULT_AGENT_KIND;
+    let cwd: string | undefined;
+    for (const token of more) {
+      if (/^[a-z][a-z0-9-]{0,20}$/u.test(token) && cwd === undefined && agentKind === DEFAULT_AGENT_KIND && !token.startsWith("~") && !token.startsWith("/")) {
+        agentKind = token;
+      } else if (cwd === undefined && (token.startsWith("/") || token.startsWith("~") || token.startsWith("."))) {
+        cwd = token;
+      } else {
+        return error(`Usage: /herdr start <name> [kind] [cwd] — did not understand "${token}".`);
+      }
+    }
+    return { kind: "start", name: rawName, agentKind, ...(cwd !== undefined ? { cwd } : {}) };
+  }
+
   if (word === "watch" || word === "unwatch") {
     if (rest.length === 1 && TARGET.test(rest[0] ?? "")) return { kind: word, target: rest[0] as string };
     return error(
@@ -166,7 +198,8 @@ export const HELP_TEXT = [
   "/herdr status [target]",
   `/herdr read <target> [lines ${MIN_READ_LINES}-${MAX_READ_LINES}]`,
   "/herdr watch <target> · /herdr unwatch <target>",
+  "/herdr start <name> [kind] [cwd] — open a new pane and start an agent there (kind defaults to claude)",
   `Targets: ${TARGET_HINT}; a pane id wins over a name, a name over a kind.`,
   "Add @machine to target a saved Herdr machine: w9:p1@buildbox",
-  "list/status/read/watch/unwatch are commands: to send a prompt that starts with one, use /herdr <target>: <prompt>.",
+  "list/status/read/watch/unwatch/start are commands: to send a prompt that starts with one, use /herdr <target>: <prompt>.",
 ].join("\n");

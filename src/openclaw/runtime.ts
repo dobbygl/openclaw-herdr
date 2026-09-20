@@ -268,6 +268,58 @@ export class HerdrRuntime {
   }
 
   /**
+   * Opens a pane and starts an agent in it. Reuses an existing shell pane whose
+   * label equals the name (so a pane the operator prepared by hand is used),
+   * otherwise creates a new tab labelled with the name in the focused
+   * workspace. Starting an agent is input, so a remote machine needs
+   * `remote.allowSend`. The agent's Herdr name is the target from then on.
+   */
+  async startAgent(rawName: string, agentKind: string, cwd?: string): Promise<string> {
+    let parsed: { selector: string; server?: string };
+    try {
+      parsed = parseTargetRef(rawName);
+    } catch (error) {
+      if (error instanceof TargetSyntaxError) return error.message;
+      throw error;
+    }
+    const name = parsed.selector;
+    const server = await this.#resolveServer(parsed.server);
+    if (!server.ok) return server.message;
+    const suffix = server.server.isLocal ? undefined : server.server.label;
+    const refusal = this.#refuseSend(server.server, formatTargetRef(name, suffix));
+    if (refusal) return refusal;
+    let client: HerdrClient;
+    try {
+      client = await this.#clientFor(server.server.id);
+    } catch (error) {
+      return this.#unreachable(server.server, error);
+    }
+    try {
+      const agents = await client.listAgents();
+      const taken = agents.find((agent) => agent.agent !== null && agent.name === name);
+      if (taken) return `${formatTargetRef(name, suffix)} already runs ${taken.agent} in **${taken.pane_id}**; pick another name.`;
+      const panes = await client.listPanes();
+      let pane = panes.find((candidate) => (candidate.label ?? "") === name && !candidate.agent);
+      let created = false;
+      if (!pane) {
+        pane = await client.createTab({ label: name, ...(cwd ? { cwd } : {}), focus: false });
+        created = true;
+      }
+      const agent = await client.startAgent({ name, kind: agentKind, paneId: pane.pane_id });
+      const ref = formatTargetRef(agent.pane_id, suffix);
+      return [
+        `Started **${name}** (${agentKind}) in **${ref}**${created ? " (new pane)" : ""}.`,
+        `Send work with /herdr ${formatTargetRef(name, suffix)}: <prompt>.`,
+      ].join("\n");
+    } catch (error) {
+      if (error instanceof HerdrRequestError) {
+        return `Herdr could not start ${agentKind} as ${name}: ${error.message} (${error.code}).`;
+      }
+      return this.#unreachable(server.server, error);
+    }
+  }
+
+  /**
    * Stops watching. Policy (finding 10): watches are keyed by (server, pane,
    * session), so several chats may watch the same pane and `unwatch` only
    * removes the caller's own watch — one chat can never silence another.
@@ -321,6 +373,8 @@ export class HerdrRuntime {
         return this.unwatch(command.target, caller);
       case "send":
         return this.send(command.target, command.text, caller);
+      case "start":
+        return this.startAgent(command.name, command.agentKind, command.cwd);
       case "error":
         return command.message;
     }

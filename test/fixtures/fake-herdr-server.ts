@@ -43,6 +43,10 @@ export interface FakeHerdr {
   emit(pane: string, status: string): void;
   /** Every `agent.prompt` this server accepted, in order. */
   readonly prompts: Array<{ target: string; text: string }>;
+  readonly created: Array<{ label: string; cwd: string | undefined }>;
+  readonly starts: Array<{ name: string; kind: string; paneId: string }>;
+  /** Adds a plain shell pane (no agent) that `pane.list` reports and `agent.start` can use. */
+  addShellPane(paneId: string, label?: string): void;
   /** Pane id of every `events.subscribe` this server accepted, in order. */
   readonly subscribes: string[];
   /** Patches what `agent.get` reports for one pane. */
@@ -109,8 +113,11 @@ export async function startFakeHerdr(prefix = "herdr-fake-", options: FakeHerdrO
   const accepted = new Set<net.Socket>();
   const streams = new Map<string, net.Socket>();
   const prompts: Array<{ target: string; text: string }> = [];
+  const shellPanes: Array<{ pane_id: string; workspace_id: string; tab_id: string; label: unknown; agent: null; cwd: unknown }> = [];
+  const created: Array<{ label: string; cwd: string | undefined }> = [];
+  const starts: Array<{ name: string; kind: string; paneId: string }> = [];
   const subscribes: string[] = [];
-  let agents: unknown[] = options.agents ?? DEFAULT_AGENTS;
+  let agents: unknown[] = [...(options.agents ?? DEFAULT_AGENTS)];
   let readText = options.readText ?? "❯ \n";
   let listError: FakeHerdrError | undefined;
   /** What `agent.get` reports, per pane. Mutable, so a task can "finish". */
@@ -149,6 +156,50 @@ export async function startFakeHerdr(prefix = "herdr-fake-", options: FakeHerdrO
           const pane = panes.get(String(request.params.target ?? ""));
           if (!pane) reply({ id: "", error: { code: "not_found", message: `no agent on ${String(request.params.target)}` } });
           else reply({ id: request.id, result: { type: "agent_get", agent: pane } });
+          socket.end();
+          break;
+        }
+        case "pane.list":
+          reply({
+            id: request.id,
+            result: {
+              type: "pane_list",
+              panes: [
+                ...agents.map((row) => ({ ...(row as Record<string, unknown>) })),
+                ...shellPanes,
+              ],
+            },
+          });
+          socket.end();
+          break;
+        case "tab.create": {
+          const paneId = `w1:p${90 + shellPanes.length}`;
+          const pane = { pane_id: paneId, workspace_id: "w1", tab_id: `w1:t${90 + shellPanes.length}`, label: request.params.label ?? null, agent: null, cwd: request.params.cwd ?? "/home/alice" };
+          shellPanes.push(pane);
+          created.push({ label: String(request.params.label ?? ""), cwd: request.params.cwd === undefined ? undefined : String(request.params.cwd) });
+          reply({ id: request.id, result: { type: "tab_created", tab: { tab_id: pane.tab_id, label: pane.label }, root_pane: pane } });
+          socket.end();
+          break;
+        }
+        case "agent.start": {
+          const paneId = String(request.params.pane_id ?? "");
+          const shell = shellPanes.find((pane) => pane.pane_id === paneId);
+          if (!shell) {
+            reply({ id: "", error: { code: "pane_not_available", message: `${paneId} is not an available shell pane` } });
+          } else if (request.params.kind === "nope") {
+            reply({ id: "", error: { code: "unsupported_kind", message: "nope is not a supported agent kind" } });
+          } else {
+            const agent = {
+              pane_id: paneId, workspace_id: "w1", tab_id: shell.tab_id, terminal_id: `term_${paneId.replace(":", "")}`,
+              agent: String(request.params.kind ?? "claude"), name: String(request.params.name ?? ""), agent_status: "idle",
+              focused: false, revision: 1, state_change_seq: 1, cwd: shell.cwd,
+            };
+            shellPanes.splice(shellPanes.indexOf(shell), 1);
+            agents.push(agent);
+            panes.set(paneId, agent);
+            starts.push({ name: agent.name, kind: agent.agent, paneId });
+            reply({ id: request.id, result: { type: "agent_started", agent } });
+          }
           socket.end();
           break;
         }
@@ -205,6 +256,11 @@ export async function startFakeHerdr(prefix = "herdr-fake-", options: FakeHerdrO
     socketPath,
     dir,
     prompts,
+    created,
+    starts,
+    addShellPane(paneId: string, label?: string) {
+      shellPanes.push({ pane_id: paneId, workspace_id: "w1", tab_id: `w1:t${paneId.replace(/\D/gu, "")}`, label: label ?? null, agent: null, cwd: "/home/alice" });
+    },
     subscribes,
     setAgent(pane: string, patch: Record<string, unknown>) {
       panes.set(pane, { ...(panes.get(pane) ?? { pane_id: pane, terminal_id: "term_1", agent: "claude" }), ...patch });

@@ -7,6 +7,7 @@ import type {
   AgentPromptWaitOptions,
   AgentStatus,
   HerdrError,
+  PaneInfo,
   PaneReadResult,
   PingResult,
   ReadSource,
@@ -323,6 +324,48 @@ export class HerdrClient {
       if (agent) normalized.push(agent);
     }
     return normalized;
+  }
+
+  /** Every pane of one workspace (or all), including plain shells. */
+  async listPanes(workspaceId?: string): Promise<PaneInfo[]> {
+    const result = await this.request<unknown>("pane.list", workspaceId ? { workspace_id: workspaceId } : {});
+    const panes = isRecord(result) && Array.isArray(result.panes) ? result.panes : [];
+    return panes.filter(
+      (pane): pane is PaneInfo =>
+        isRecord(pane) && typeof pane.pane_id === "string" && typeof pane.workspace_id === "string" && typeof pane.tab_id === "string",
+    );
+  }
+
+  /** New tab (with one shell pane) in a workspace; returns the new pane. */
+  async createTab(options: { workspaceId?: string; label?: string; cwd?: string; focus?: boolean }): Promise<PaneInfo> {
+    const result = await this.request<unknown>("tab.create", {
+      ...(options.workspaceId ? { workspace_id: options.workspaceId } : {}),
+      ...(options.label ? { label: options.label } : {}),
+      ...(options.cwd ? { cwd: options.cwd } : {}),
+      focus: options.focus ?? false,
+    });
+    const pane = isRecord(result) ? result.root_pane : undefined;
+    if (!isRecord(pane) || typeof pane.pane_id !== "string") {
+      throw new HerdrTransportError("Herdr tab.create returned no root pane");
+    }
+    return pane as unknown as PaneInfo;
+  }
+
+  /**
+   * Starts a supported agent in an existing shell pane and waits until Herdr
+   * sees it ready. The transport budget covers the server-side startup wait.
+   */
+  async startAgent(options: { name: string; kind: string; paneId: string; timeoutMs?: number }): Promise<AgentInfo> {
+    const timeoutMs = options.timeoutMs ?? 60_000;
+    const result = await this.request<unknown>(
+      "agent.start",
+      { name: options.name, kind: options.kind, pane_id: options.paneId, timeout_ms: timeoutMs },
+      { requestTimeoutMs: timeoutMs + 10_000 },
+    );
+    const payload = isRecord(result) && isRecord(result.agent) ? result.agent : result;
+    const agent = normalizeAgentInfo(payload);
+    if (!agent) throw new HerdrTransportError(`Herdr agent.start returned no usable agent for ${options.paneId}`);
+    return agent;
   }
 
   async getAgent(target: string): Promise<AgentInfo> {

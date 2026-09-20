@@ -36,6 +36,19 @@ export interface AgentInfo {
   interactive_ready?: boolean | null;
 }
 
+/** One pane as `pane.list` reports it: a shell pane has `agent: null`. */
+export interface PaneInfo {
+  pane_id: string;
+  workspace_id: string;
+  tab_id: string;
+  terminal_id?: string;
+  label?: string | null;
+  agent?: string | null;
+  agent_status?: AgentStatus;
+  cwd?: string | null;
+  focused?: boolean;
+}
+
 export interface PaneReadResult {
   pane_id: string;
   workspace_id: string;

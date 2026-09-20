@@ -67,7 +67,10 @@ From any OpenClaw chat surface:
 /herdr read w6:p1 60             more output (1–400 lines)
 /herdr watch w6:p1               wake me when the current task settles
 /herdr unwatch w6:p1
+/herdr start cuento codex ~/app  open a new pane, start Codex there as "cuento"
 ```
+
+`start` reuses an empty pane already labelled with that name, otherwise it opens a new tab in the focused workspace. From then on the name is the target: `/herdr cuento: write the tests`. On a remote machine it needs `remote.allowSend`, like any other input.
 
 A target is resolved in strict order: Herdr pane id (`w6:p1`), terminal id, Herdr agent name (`reviewer`), then agent kind (`claude`, `codex`). More than one match at a level is refused with the candidates listed; the plugin never guesses.
 

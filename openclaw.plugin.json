@@ -21,6 +21,7 @@
       "herdr_send",
       "herdr_read",
       "herdr_watch",
+      "herdr_start",
       "herdr_status"
     ]
   },
@@ -38,6 +39,9 @@
       "optional": true
     },
     "herdr_status": {
+      "optional": true
+    },
+    "herdr_start": {
       "optional": true
     }
   },

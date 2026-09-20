@@ -433,6 +433,7 @@ describe("allowSend through both surfaces", () => {
       "herdr_list",
       "herdr_read",
       "herdr_send",
+      "herdr_start",
       "herdr_status",
       "herdr_watch",
     ]);

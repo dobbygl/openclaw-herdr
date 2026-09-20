@@ -75,6 +75,24 @@ export function registerHerdrTools(api: HostApi, runtime: HerdrRuntime): void {
       execute: (_id, params) => guarded(() => runtime.watch((params as { target: string }).target, caller(ctx))),
     }),
     () => ({
+      name: "herdr_start",
+      label: "Herdr: start agent",
+      description:
+        "Open a new Herdr pane (or reuse an empty pane labelled with the name) and start a coding agent in it. The name becomes the target for herdr_send. Remote machines need remote.allowSend.",
+      parameters: Type.Object(
+        {
+          name: Type.String({ description: "Agent name, lowercase [a-z0-9_-], optionally @machine." }),
+          kind: Type.Optional(Type.String({ description: "Agent kind: claude (default), codex, gemini, …" })),
+          cwd: Type.Optional(Type.String({ description: "Working directory for the new pane." })),
+        },
+        { additionalProperties: false },
+      ),
+      execute: (_id, params) => {
+        const p = params as { name: string; kind?: string; cwd?: string };
+        return guarded(() => runtime.startAgent(p.name, p.kind ?? "claude", p.cwd));
+      },
+    }),
+    () => ({
       name: "herdr_status",
       label: "Herdr: status",
       description: "Current state of one agent (or all when target is omitted) plus the tail of its output.",

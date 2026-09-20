@@ -3,7 +3,7 @@ import path from "node:path";
 import fs from "node:fs/promises";
 import { fileURLToPath } from "node:url";
 import { afterEach, beforeEach, describe, expect, it } from "vitest";
-import { HerdrRequestError, HerdrTransportError, type HerdrClient, type Subscription } from "../src/herdr/client.js";
+import { HerdrClient, HerdrRequestError, HerdrTransportError, type Subscription } from "../src/herdr/client.js";
 import type { AgentInfo } from "../src/herdr/types.js";
 import { ServerRegistry } from "../src/core/servers.js";
 import { HerdrRuntime } from "../src/openclaw/runtime.js";
@@ -373,5 +373,56 @@ describe("HerdrRuntime with machines", () => {
     expect(await runtime.handleCommand("unwatch w1:p1@buildbox", { sessionKey: "s1" })).toBe(
       "Stopped watching w1:p1@buildbox.",
     );
+  });
+});
+
+describe("HerdrRuntime start", () => {
+  let fake: FakeHerdr;
+  afterEach(async () => {
+    await fake?.close();
+  });
+
+  async function runtimeOnFake(): Promise<{ runtime: HerdrRuntime }> {
+    fake = await startFakeHerdr();
+    const client = new HerdrClient({ socketPath: fake.socketPath });
+    return makeRuntime(client as HerdrClient & FakeClientExtras);
+  }
+
+  it("opens a new tab and starts the agent, then targets it by name", async () => {
+    const { runtime } = await runtimeOnFake();
+    const out = await runtime.handleCommand("start cuento codex ~/tales", {});
+    expect(fake.created).toEqual([{ label: "cuento", cwd: "~/tales" }]);
+    expect(fake.starts).toEqual([{ name: "cuento", kind: "codex", paneId: "w1:p90" }]);
+    expect(out).toContain("Started **cuento** (codex) in **w1:p90** (new pane)");
+    const sent = await runtime.handleCommand("cuento: write a story", { sessionKey: "s" });
+    expect(fake.prompts).toEqual([{ target: "w1:p90", text: "write a story" }]);
+    expect(sent).toContain("Sent to **w1:p90**");
+  });
+
+  it("reuses an empty pane whose label matches the name", async () => {
+    const { runtime } = await runtimeOnFake();
+    fake.addShellPane("w1:p7", "cuento");
+    const out = await runtime.handleCommand("start cuento", {});
+    expect(fake.created).toEqual([]);
+    expect(fake.starts).toEqual([{ name: "cuento", kind: "claude", paneId: "w1:p7" }]);
+    expect(out).toContain("in **w1:p7**");
+    expect(out).not.toContain("new pane");
+  });
+
+  it("refuses a name that already runs an agent", async () => {
+    const { runtime } = await runtimeOnFake();
+    fake.addShellPane("w1:p7", "cuento");
+    await runtime.handleCommand("start cuento", {});
+    const again = await runtime.handleCommand("start cuento", {});
+    expect(again).toContain("already runs");
+    expect(fake.starts).toHaveLength(1);
+  });
+
+  it("relays Herdr's refusal when the agent cannot be started", async () => {
+    const { runtime } = await runtimeOnFake();
+    const out = await runtime.handleCommand("start busy nope", {});
+    expect(out).toContain("could not start nope as busy");
+    expect(out).toContain("unsupported_kind");
+    expect(fake.starts).toEqual([]);
   });
 });
