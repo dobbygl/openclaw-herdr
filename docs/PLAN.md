@@ -54,7 +54,7 @@ fields are ignorable. Building on that removes all three failure classes.
 - [ ] Map `unknown` to a visible "Herdr cannot classify this pane" message, never to a guess.
 - [ ] `blocked` notifications include the exact question text; `/herdr <pane>: <answer>` sends the answer with `agent.send_keys` when it is a menu, `agent.prompt` when it is free text.
 - [ ] Watch deadline sweep test with a fake clock; idempotent notifications after restart.
-- [ ] `openclaw plugins validate` and `pack` in CI.
+- [ ] Decide whether to move to `defineToolPlugin`/feature contracts so `openclaw plugins validate` and `pack` work (they only understand those authoring forms; legacy `definePluginEntry` plugins like AKK install fine without them).
 
 ### M3 — Operator ergonomics
 

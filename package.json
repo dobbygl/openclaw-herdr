@@ -37,7 +37,6 @@
     "test": "vitest run",
     "test:watch": "vitest",
     "smoke": "npm run build && node dist/scripts/smoke.js",
-    "validate": "openclaw plugins validate --json",
     "check": "npm run typecheck && npm test && npm run build"
   },
   "openclaw": {
