@@ -1,6 +1,6 @@
 import type { AgentInfo, AgentStatus } from "../herdr/types.js";
 import { compactPaneText } from "./compact.js";
-import type { WatchRecord } from "./watch-store.js";
+import type { SettledStatus, WatchRecord } from "./watch-store.js";
 
 const STATUS_ICON: Record<AgentStatus, string> = {
   idle: "○",
@@ -25,12 +25,22 @@ export function formatAgentList(agents: AgentInfo[], watches: WatchRecord[]): st
   return ["Herdr agents:", ...lines].join("\n");
 }
 
-export function formatSendAccepted(agent: AgentInfo, text: string, watching: boolean): string {
-  return [
-    `Sent to **${agent.pane_id}** (${agent.name ?? agent.agent ?? "?"}).`,
-    watching ? "I will tell you when it finishes or needs input." : "Not watching; use /herdr status to check.",
-    `> ${preview(text)}`,
-  ].join("\n");
+/**
+ * Outcome of a send, from the operator's point of view:
+ *  - `watching`: delivered and tracked.
+ *  - `off`: delivered, tracking not requested.
+ *  - `tracking_failed`: delivered, but we cannot promise a notification.
+ */
+export type SendTracking = "watching" | "off" | "tracking_failed";
+
+export function formatSendAccepted(agent: AgentInfo, text: string, tracking: SendTracking): string {
+  const note =
+    tracking === "watching"
+      ? "I will tell you when it finishes or needs input."
+      : tracking === "off"
+        ? "Not watching; use /herdr status to check."
+        : "It was delivered, but I could not set up the watch, so I will not be able to tell you when it finishes; use /herdr status.";
+  return [`Sent to **${agent.pane_id}** (${agent.name ?? agent.agent ?? "?"}).`, note, `> ${preview(text)}`].join("\n");
 }
 
 export function formatStatus(agent: AgentInfo, tail: string | undefined, watch: WatchRecord | undefined): string {
@@ -41,22 +51,21 @@ export function formatStatus(agent: AgentInfo, tail: string | undefined, watch: 
   return lines.join("\n");
 }
 
-export function formatNotification(
-  watch: WatchRecord,
-  status: AgentStatus | "exited" | "timed_out",
-  tail: string | undefined,
-): string {
+export function formatNotification(watch: WatchRecord, status: SettledStatus, tail: string | undefined): string {
   const who = `**${watch.paneId}** (${watch.agentLabel})`;
   const headline =
     status === "blocked"
       ? `Herdr: ${who} needs your input.`
       : status === "exited"
         ? `Herdr: ${who} exited.`
-        : status === "timed_out"
-          ? `Herdr: ${who} is still not finished after the watch deadline.`
-          : `Herdr: ${who} finished.`;
+        : status === "occupant_changed"
+          ? `Herdr: ${who} is gone; that pane runs something else now, so I stopped watching it.`
+          : status === "timed_out"
+            ? `Herdr: ${who} is still not finished after the watch deadline.`
+            : `Herdr: ${who} finished.`;
   const parts = [headline, `> ${preview(watch.promptPreview)}`];
-  const block = tail ? trimTail(tail, 20) : "";
+  // Another terminal's output must not be shown as if it were the answer.
+  const block = tail && status !== "occupant_changed" ? trimTail(tail, 20) : "";
   if (block) parts.push("", block);
   if (status === "blocked") parts.push("", "Answer it in the terminal, or send a reply with /herdr <pane>: <text>.");
   return parts.join("\n");

@@ -4,7 +4,7 @@ import { compactPaneText } from "../core/compact.js";
 import { formatAgentList, formatSendAccepted, formatStatus, preview } from "../core/format.js";
 import { HELP_TEXT, parseHerdrCommand, type HerdrCommand } from "../core/parse.js";
 import { resolveTarget } from "../core/targets.js";
-import { WatchStore } from "../core/watch-store.js";
+import { WatchStore, type WatchRecord } from "../core/watch-store.js";
 import { HerdrWatcher, type Notifier } from "../core/watcher.js";
 import type { HerdrPluginConfig } from "./config.js";
 import type { HostLogger } from "./host-api.js";
@@ -41,7 +41,7 @@ export class HerdrRuntime {
 
   async start(stateDir: string, logger?: HostLogger): Promise<void> {
     if (logger) this.#logger = logger;
-    const store = new WatchStore(stateDir);
+    const store = new WatchStore(stateDir, this.#logger);
     await store.load();
     this.#store = store;
     this.#watcher = new HerdrWatcher(this.client, store, this.notifier, this.#logger, {
@@ -95,6 +95,17 @@ export class HerdrRuntime {
     return compact ? "```\n" + compact + "\n```" : `${target.agent.pane_id} shows nothing yet.`;
   }
 
+  /**
+   * Sends one prompt. The order is deliberate (finding 1): the watch and its
+   * confirmed subscription exist *before* `agent.prompt`, so an agent that
+   * answers in a second cannot finish inside a window where nobody listens.
+   *
+   * The reply distinguishes three outcomes, because telling the operator
+   * "nothing was sent" about a prompt that did land is the worst failure here:
+   *  - not sent      — target refused, agent blocked, or Herdr refused the call.
+   *  - sent          — with or without a working watch.
+   *  - uncertain     — the transport died mid-prompt; it may have been delivered.
+   */
   async send(selector: string | undefined, text: string, caller: Caller, watch = true): Promise<string> {
     const agents = await this.client.listAgents();
     const target = resolveTarget(agents, selector);
@@ -108,21 +119,52 @@ export class HerdrRuntime {
         tail ? "```\n" + compactPaneText(tail, { maxLines: 20 }) + "\n```" : "",
       ].join("\n");
     }
-    await this.client.prompt(agent.pane_id, text);
-    let watching = false;
-    if (watch && caller.sessionKey && this.#watcher) {
-      // Refresh the agent so the watch starts from the post-send sequence.
-      const fresh = await this.client.getAgent(agent.pane_id).catch(() => agent);
-      await this.#watcher.watch({
-        agent: { ...fresh, agent_status: "working" },
-        sessionKey: caller.sessionKey,
-        ...(caller.agentId ? { agentId: caller.agentId } : {}),
-        promptPreview: preview(text),
-        timeoutMinutes: this.config.watchTimeoutMinutes,
-      });
-      watching = true;
+
+    const watcher = this.#watcher;
+    const sessionKey = caller.sessionKey;
+    let record: WatchRecord | undefined;
+    let trackingFailed = false;
+    if (watch && sessionKey && watcher) {
+      try {
+        record = await watcher.watch({
+          // The observed state, never an invented "working": what the agent is
+          // doing is Herdr's to say, and `seqAtStart` is captured from it.
+          agent,
+          sessionKey,
+          ...(caller.agentId ? { agentId: caller.agentId } : {}),
+          promptPreview: preview(text),
+          timeoutMinutes: this.config.watchTimeoutMinutes,
+        });
+      } catch (error) {
+        trackingFailed = true;
+        this.#logger.error?.(`herdr: could not start the watch for ${agent.pane_id}: ${describeError(error)}`);
+      }
     }
-    return formatSendAccepted(agent, text, watching);
+
+    try {
+      await this.client.prompt(agent.pane_id, text);
+    } catch (error) {
+      if (error instanceof HerdrTransportError) {
+        // We do not know whether Herdr got it. Keep the watch: if the prompt
+        // did land, the subscription still reports the completion.
+        return [
+          `I could not confirm the send to **${agent.pane_id}**: ${error.message}.`,
+          record
+            ? "The prompt may have been delivered; I am still watching, so check /herdr status before resending."
+            : "The prompt may have been delivered; check /herdr status before resending.",
+          `> ${preview(text)}`,
+        ].join("\n");
+      }
+      if (record) await watcher?.cancel(record.id);
+      return `Nothing was sent to ${agent.pane_id}. ${describeFailure(error)}`;
+    }
+
+    if (record && watcher) {
+      // The prompt is in. Ask Herdr once: a fast agent may already be finished
+      // and the pane may even have changed hands. `reconcile` never throws.
+      await watcher.reconcile(record.id, "post-prompt");
+    }
+    return formatSendAccepted(agent, text, record ? "watching" : trackingFailed ? "tracking_failed" : "off");
   }
 
   async watch(selector: string, caller: Caller): Promise<string> {
@@ -140,12 +182,29 @@ export class HerdrRuntime {
     return `Watching ${target.agent.pane_id} (${target.agent.agent_status}). I will tell you when it finishes or blocks.`;
   }
 
-  async unwatch(selector: string): Promise<string> {
-    if (!this.#watcher) return "Watcher is not running.";
+  /**
+   * Stops watching. Policy (finding 10): watches are keyed by (pane, session),
+   * so several chats may watch the same pane and `unwatch` only removes the
+   * caller's own watch — one chat can never silence another. Without a session
+   * (a surface that cannot be notified anyway) it clears the pane entirely.
+   */
+  async unwatch(selector: string, caller: Caller): Promise<string> {
+    const watcher = this.#watcher;
+    if (!watcher) return "Watcher is not running.";
     const agents = await this.client.listAgents().catch(() => [] as AgentInfo[]);
     const target = resolveTarget(agents, selector);
     const paneId = target.ok ? target.agent.pane_id : selector;
-    return (await this.#watcher.unwatch(paneId)) ? `Stopped watching ${paneId}.` : `${paneId} was not being watched.`;
+    if (!caller.sessionKey) {
+      const removed = await watcher.unwatch(paneId);
+      return removed > 0
+        ? `Stopped watching ${paneId} (${removed} watch${removed === 1 ? "" : "es"}).`
+        : `${paneId} was not being watched.`;
+    }
+    if ((await watcher.unwatch(paneId, caller.sessionKey)) > 0) return `Stopped watching ${paneId}.`;
+    const others = this.#store?.listByPane(paneId).length ?? 0;
+    return others > 0
+      ? `${paneId} is watched by another chat, not by this one.`
+      : `${paneId} was not being watched.`;
   }
 
   async #run(command: HerdrCommand, caller: Caller): Promise<string> {
@@ -161,7 +220,7 @@ export class HerdrRuntime {
       case "watch":
         return this.watch(command.target, caller);
       case "unwatch":
-        return this.unwatch(command.target);
+        return this.unwatch(command.target, caller);
       case "send":
         return this.send(command.target, command.text, caller);
     }
@@ -174,6 +233,10 @@ export class HerdrRuntime {
       return undefined;
     }
   }
+}
+
+export function describeError(error: unknown): string {
+  return error instanceof Error ? error.message : String(error);
 }
 
 export function describeFailure(error: unknown): string {
