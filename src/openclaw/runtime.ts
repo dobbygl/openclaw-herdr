@@ -359,7 +359,14 @@ export class HerdrRuntime {
     } catch (error) {
       return { ok: false, message: this.#unreachable(server.server, error) };
     }
-    const agents = await client.listAgents();
+    let agents: AgentInfo[];
+    try {
+      agents = await client.listAgents();
+    } catch (error) {
+      // Name the server that failed: "cannot reach Herdr" is wrong when the
+      // Herdr that went quiet is on another machine.
+      return { ok: false, message: this.#unreachable(server.server, error) };
+    }
     if (selector === undefined) {
       const live = agents.filter((agent) => agent.agent !== null);
       if (live.length !== 1) {
