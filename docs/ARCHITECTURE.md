@@ -39,10 +39,21 @@ OpenClaw Gateway ──(in-process plugin)──► openclaw-herdr
 
 1. User: `/herdr w6:p1: run the tests`.
 2. `parse` → `{send, target:"w6:p1", text}`; `targets` resolves against a fresh `agent.list`.
-3. If the agent is `blocked`, refuse and show the pane tail. Otherwise `agent.prompt`.
-4. Store a `WatchRecord` (pane, session key, deadline, `state_change_seq`) and open a subscription for that pane.
-5. On `working → idle|done`: read the last lines, enqueue the notification into the originating session, request a heartbeat, drop the watch. On `blocked`: notify, keep the watch. On pane exit or deadline: notify, drop.
-6. Gateway restart: the service reloads the store and resubscribes.
+3. If the agent is `blocked`, refuse and show the pane tail.
+4. Store a `WatchRecord` (pane, session key, deadline, `state_change_seq`,
+   `terminal_id`) and open — and confirm — the subscription for that pane
+   *before* `agent.prompt`, so a fast agent cannot finish unobserved.
+5. `agent.prompt`. Then one `agent.get`: if the sequence advanced and the agent
+   is idle/done, the task already ran and settles now. A transport error during
+   the prompt is reported as uncertain, never as "not sent".
+6. On `working → idle|done`: read the last lines, enqueue the notification into
+   the originating session, request a heartbeat, drop the watch once delivery
+   succeeded. On `blocked`: notify, keep the watch. On pane exit, occupant
+   change or deadline: notify, drop. Events never settle a watch on their own;
+   `agent.get` confirms status, occupant and sequence first.
+7. Gateway restart: the service reloads the store, resubscribes and reconciles
+   every watch against `agent.get`. Undelivered notifications are persisted and
+   retried with backoff.
 
 ## What is deliberately absent
 
