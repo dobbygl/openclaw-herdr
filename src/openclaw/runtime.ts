@@ -115,7 +115,7 @@ export class HerdrRuntime {
       const tail = await this.#safeRead(agent.pane_id, 20);
       return [
         `${agent.pane_id} is waiting for input, so I did not send anything.`,
-        "Read the prompt below and answer it in the terminal, or tell me what to answer.",
+        "Read the prompt below and answer it in the terminal (Herdr or Collie); answering from chat is not implemented yet.",
         tail ? "```\n" + compactPaneText(tail, { maxLines: 20 }) + "\n```" : "",
       ].join("\n");
     }
@@ -223,6 +223,8 @@ export class HerdrRuntime {
         return this.unwatch(command.target, caller);
       case "send":
         return this.send(command.target, command.text, caller);
+      case "error":
+        return command.message;
     }
   }
 

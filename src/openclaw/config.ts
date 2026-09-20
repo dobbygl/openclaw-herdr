@@ -16,6 +16,6 @@ export function readPluginConfig(raw: Record<string, unknown> | undefined): Herd
     ...(socketPath ? { socketPath } : {}),
     requestTimeoutMs: number("requestTimeoutMs", 5_000),
     watchTimeoutMinutes: number("watchTimeoutMinutes", 720),
-    readLines: number("readLines", 40),
+    readLines: Math.min(400, Math.max(1, Math.trunc(number("readLines", 40)))),
   };
 }
