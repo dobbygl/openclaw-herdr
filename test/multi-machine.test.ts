@@ -463,7 +463,15 @@ describe("ssh recovery", () => {
       const pids = await liveSshPids(BUILDBOX_TARGET);
       expect(pids.length).toBeGreaterThanOrEqual(1);
       expect(await liveSshPids(LAB_TARGET)).toEqual([]);
-      for (const pid of pids) process.kill(pid, "SIGKILL");
+      // A request child (e.g. the agent.get that followed the prompt) may exit
+      // between the liveness probe and the kill: that is not a failure.
+      for (const pid of pids) {
+        try {
+          process.kill(pid, "SIGKILL");
+        } catch (error) {
+          if ((error as NodeJS.ErrnoException).code !== "ESRCH") throw error;
+        }
+      }
 
       // The task finishes inside the blind window, so only a reconcile after
       // the resubscribe can find it: no event will ever report it.
