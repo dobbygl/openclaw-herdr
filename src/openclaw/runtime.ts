@@ -368,12 +368,24 @@ export class HerdrRuntime {
     }
     const server = await this.#resolveServer(parsed.server);
     if (!server.ok) return server.message;
-    // The pane may be gone (that is often why the operator unwatches), so a
-    // failed lookup falls back to the selector as a literal pane id.
-    const agents = await this.#listAgentsQuietly(server.server.id);
-    const resolved = resolveTarget(agents, parsed.selector);
-    const paneId = resolved.ok ? resolved.agent.pane_id : parsed.selector;
+    // The pane may be gone (that is often why the operator unwatches), so an
+    // explicit pane id that no longer resolves is still taken literally. Any
+    // other selector must resolve to exactly one agent: an ambiguous label is
+    // refused with its candidates, never guessed at or reported as unwatched.
     const suffix = server.server.isLocal ? undefined : server.server.label;
+    const literalPane = PANE_ID.test(parsed.selector);
+    let agents: AgentInfo[];
+    try {
+      agents = await listLabelledAgents(await this.#clientFor(server.server.id));
+    } catch (error) {
+      if (!literalPane) return this.#unreachable(server.server, error);
+      agents = [];
+    }
+    const resolved = resolveTarget(agents, parsed.selector);
+    if (!resolved.ok && (resolved.reason === "ambiguous" || !literalPane)) {
+      return server.server.isLocal ? resolved.message : `On ${server.server.label}: ${resolved.message}`;
+    }
+    const paneId = resolved.ok ? resolved.agent.pane_id : parsed.selector;
     const ref = formatTargetRef(paneId, suffix);
     const paneRef = { serverId: server.server.id, paneId };
     if (!caller.sessionKey) {
@@ -521,16 +533,6 @@ export class HerdrRuntime {
     }
   }
 
-  /** `agent.list` for a server, or an empty herd: used where a failure is not fatal. */
-  async #listAgentsQuietly(serverId: string): Promise<AgentInfo[]> {
-    try {
-      const client = await this.#clientFor(serverId);
-      return await listLabelledAgents(client);
-    } catch {
-      return [];
-    }
-  }
-
   /** The `remote.allowSend` gate. Shared by every path that types into a pane. */
   #refuseSend(server: ServerDescription, ref: string): string | undefined {
     if (server.isLocal) return undefined;
@@ -554,6 +556,9 @@ export class HerdrRuntime {
     }
   }
 }
+
+/** Herdr's pane id shape (`w1:p2`): the one selector that is meaningful after its pane is gone. */
+const PANE_ID = /^[a-z][a-z0-9]*:p[0-9]+$/iu;
 
 export function describeError(error: unknown): string {
   return error instanceof Error ? error.message : String(error);

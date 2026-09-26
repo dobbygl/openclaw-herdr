@@ -84,7 +84,9 @@ A target is resolved in strict order: Herdr pane id (`w6:p1`), terminal id, Herd
 
 - Name precedence for display: Herdr agent name, then tab label, then just the pane id. A tab Herdr reports with its default label (its own number) counts as unlabelled.
 - A tab label is refused as a target when its tab runs more than one agent, or when the same label (case-insensitively) is on more than one tab — even if only one of them runs an agent. The refusal lists the candidate pane ids to use instead.
-- Labels are typed as selectors, so only labels made of letters, digits, `_`, `-`, `:` and `#` that start with a letter can be used as targets; others are still shown and the pane id always works. A label cannot contain `@`, which introduces a machine.
+- Labels are typed as selectors: letters (any script) and digits, plus `_`, `.`, `-`, `:` and `#`, so `7`, `sample.review` and `revisión` all work. A label with spaces or `@` (which introduces a machine) is still shown, but can only be reached through its pane id.
+- `/herdr <target>: <prompt>` never degrades to "send to the only agent" when the target names a machine: a malformed `something@machine:` is refused with nothing sent.
+- `unwatch` follows the same rules: an ambiguous label is refused with the candidate pane ids and removes nothing. Only an explicit pane id is still accepted after its pane is gone (or while Herdr is unreachable).
 - A Herdr without `tab.list` (it answers "unknown variant") simply shows pane ids and names as before. Any other failure of `tab.list` — a refusal or a broken connection — is reported, not hidden behind an unlabelled list.
 
 When a watched agent settles, the originating chat gets a short message like:

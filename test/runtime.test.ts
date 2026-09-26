@@ -269,6 +269,116 @@ describe("HerdrRuntime with tab labels", () => {
   });
 });
 
+describe("HerdrRuntime label regressions", () => {
+  const row = (pane: string, tab: string): AgentInfo => ({
+    pane_id: pane,
+    workspace_id: "w1",
+    tab_id: tab,
+    terminal_id: `term_${pane}`,
+    agent: "claude",
+    agent_status: "idle",
+    focused: false,
+    revision: 1,
+    state_change_seq: 1,
+  });
+  const labelled = (herd: { agents: AgentInfo[]; tabs: unknown[]; down?: boolean }) =>
+    fakeClient({
+      listAgents: async () => {
+        if (herd.down) throw new HerdrTransportError("connect ENOENT");
+        return herd.agents;
+      },
+      listTabs: async () => herd.tabs,
+      getAgent: async (target: string) => herd.agents.find((a) => a.pane_id === target) ?? row(target, "w1:t9"),
+    });
+
+  it("never sends a machine-qualified prompt to the only local agent", async () => {
+    // One local agent; the operator addressed another machine.
+    const client = labelled({
+      agents: [row("w1:p1", "w1:t1")],
+      tabs: [{ tab_id: "w1:t1", workspace_id: "w1", number: 1, label: "local-worker" }],
+    });
+    const { runtime } = await makeRuntime(client);
+    const qualified = await runtime.handleCommand("sample.review@buildbox: run tests", { sessionKey: "s1" });
+    expect(qualified).toContain('"buildbox"');
+    const malformed = await runtime.handleCommand("x@@buildbox: run tests", { sessionKey: "s1" });
+    expect(malformed).toContain("nothing was sent");
+    expect(client.prompts).toEqual([]);
+  });
+
+  it("resolves numeric and dotted labels shown by the list", async () => {
+    const client = labelled({
+      agents: [row("w1:p1", "w1:t1"), row("w1:p2", "w1:t2")],
+      tabs: [
+        { tab_id: "w1:t1", workspace_id: "w1", number: 1, label: "7" },
+        { tab_id: "w1:t2", workspace_id: "w1", number: 2, label: "sample.review" },
+      ],
+    });
+    const { runtime } = await makeRuntime(client);
+    await runtime.handleCommand("7: run tests", { sessionKey: "s1" });
+    await runtime.handleCommand("sample.review: run tests", { sessionKey: "s1" });
+    expect(client.prompts).toEqual([
+      { target: "w1:p1", text: "run tests" },
+      { target: "w1:p2", text: "run tests" },
+    ]);
+  });
+
+  it("refuses to unwatch a label on two tabs and keeps both watches", async () => {
+    const client = labelled({
+      agents: [row("w1:p1", "w1:t1"), row("w1:p2", "w1:t2")],
+      tabs: [
+        { tab_id: "w1:t1", workspace_id: "w1", number: 1, label: "sample#reviewer" },
+        { tab_id: "w1:t2", workspace_id: "w1", number: 2, label: "sample#reviewer" },
+      ],
+    });
+    const { runtime } = await makeRuntime(client);
+    await runtime.handleCommand("watch w1:p1", { sessionKey: "s1" });
+    await runtime.handleCommand("watch w1:p2", { sessionKey: "s1" });
+    expect(await runtime.handleCommand("unwatch sample#reviewer", { sessionKey: "s1" })).toBe(
+      "sample#reviewer labels 2 tabs (w1:t1, w1:t2); use a pane id: w1:p1 (sample#reviewer), w1:p2 (sample#reviewer).",
+    );
+    expect(await runtime.handleCommand("unwatch w1:p1", { sessionKey: "s1" })).toBe("Stopped watching w1:p1.");
+    expect(await runtime.handleCommand("unwatch w1:p2", { sessionKey: "s1" })).toBe("Stopped watching w1:p2.");
+  });
+
+  it("refuses to unwatch a label whose tab runs several agents", async () => {
+    const client = labelled({
+      agents: [row("w1:p1", "w1:t1"), row("w1:p2", "w1:t1")],
+      tabs: [{ tab_id: "w1:t1", workspace_id: "w1", number: 1, label: "sample#reviewer", pane_count: 2 }],
+    });
+    const { runtime } = await makeRuntime(client);
+    await runtime.handleCommand("watch w1:p1", { sessionKey: "s1" });
+    const out = await runtime.handleCommand("unwatch sample#reviewer", { sessionKey: "s1" });
+    expect(out).toContain("matches 2 agents by tab label");
+    expect(out).toContain("w1:p1");
+    expect(out).toContain("w1:p2");
+    expect(await runtime.handleCommand("unwatch w1:p1", { sessionKey: "s1" })).toBe("Stopped watching w1:p1.");
+  });
+
+  it("still unwatches a gone pane by its id, but not by a name nobody has any more", async () => {
+    const herd = {
+      agents: [row("w1:p1", "w1:t1"), row("w1:p2", "w1:t2")],
+      tabs: [{ tab_id: "w1:t2", workspace_id: "w1", number: 2, label: "sample#builder" }],
+      down: false,
+    };
+    const { runtime } = await makeRuntime(labelled(herd));
+    await runtime.handleCommand("watch w1:p2", { sessionKey: "s1" });
+    herd.agents = [row("w1:p1", "w1:t1")];
+    expect(await runtime.handleCommand("unwatch sample#builder", { sessionKey: "s1" })).toContain(
+      "No agent matches sample#builder",
+    );
+    expect(await runtime.handleCommand("unwatch w1:p2", { sessionKey: "s1" })).toBe("Stopped watching w1:p2.");
+  });
+
+  it("unwatches a pane id while Herdr is down, and says so for anything else", async () => {
+    const herd = { agents: [row("w1:p1", "w1:t1")], tabs: [], down: false };
+    const { runtime } = await makeRuntime(labelled(herd));
+    await runtime.handleCommand("watch w1:p1", { sessionKey: "s1" });
+    herd.down = true;
+    expect(await runtime.handleCommand("unwatch claude", { sessionKey: "s1" })).toContain("Cannot reach Herdr");
+    expect(await runtime.handleCommand("unwatch w1:p1", { sessionKey: "s1" })).toBe("Stopped watching w1:p1.");
+  });
+});
+
 describe("HerdrRuntime with machines", () => {
   const FAKE_HERDR = fileURLToPath(new URL("./fixtures/fake-herdr-cli.mjs", import.meta.url));
   const FAKE_SSH = fileURLToPath(new URL("./fixtures/fake-ssh.mjs", import.meta.url));
