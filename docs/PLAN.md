@@ -151,7 +151,7 @@ Tasks:
 - [ ] `/herdr start <kind> [--cwd path]` using `agent.start` in a new pane (`pane.split` / `workspace.create`).
 - [ ] Short aliases: remember the last target per chat session so `/herdr <prompt>` works with several agents open.
 - [ ] Optional `herdr integration install claude|codex` so Herdr reports native session ids; show them in `/herdr status`.
-- [ ] Spanish/English message table (the operator chats in Spanish).
+- [x] Spanish/English message table, including pane-output truncation markers (explicit plugin language; see ADR 0005).
 
 ### M4 — Release
 

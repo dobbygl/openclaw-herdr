@@ -183,6 +183,7 @@ Optional keys under `plugins.entries.herdr.config` in `openclaw.json`:
 
 | Key | Default | Purpose |
 | --- | --- | --- |
+| `language` | `en` | Language of the plugin's replies and watch notifications: `en` or `es` (see below) |
 | `socketPath` | `$HERDR_SOCKET_PATH` or `~/.config/herdr/herdr.sock` | Local Herdr server socket |
 | `requestTimeoutMs` | `5000` | Timeout per **local** Herdr request; remote requests use their own, larger fixed budget |
 | `watchTimeoutMinutes` | `720` | Ceiling for a watch that never settles; undelivered notifications are retried until then |
@@ -191,6 +192,17 @@ Optional keys under `plugins.entries.herdr.config` in `openclaw.json`:
 | `sshBin` | `ssh` on `PATH` | `ssh` executable used to reach remote machines |
 | `remote.enabled` | `true` | Whether remote machines are discovered at all; `false` leaves only the local host |
 | `remote.allowSend` | `[]` | Machine labels or ids allowed to receive prompts and key presses; every other machine stays read-only |
+
+### Reply language
+
+The plugin answers in English unless `language` is set to `"es"`. OpenClaw gives plugins no trusted language for a conversation or user, so the plugin does not guess: there is no `auto` mode, and it never reads conversation history or terminal output to decide. The manifest accepts exactly `en` or `es`. OpenClaw validates plugin config against the manifest before loading the plugin, so any other value (including region tags like `es-ES`) is rejected by the host: the Gateway skips the plugin and `openclaw doctor` reports it. If an unsupported value reaches the plugin anyway, it replies in English and logs a warning.
+
+- Localized: `/herdr` replies, `herdr_*` tool results, usage errors and help, and watch notifications.
+- Never translated: pane ids, agent names, tab labels, machine labels, paths, your prompt, and the agent's output; command syntax (`/herdr read <target> [lines 1-400]` is typed the same in every language); agent states (`idle`, `working`, …) as Herdr reports them; Herdr's own error messages; and transport reasons such as `ssh authentication failed`.
+- A watch keeps the language of the reply that started it, so its notification matches even if the setting changes or the Gateway restarts in between. Watches created before this setting existed notify in English.
+- Tool descriptions and the assistant's instructions stay English; they are read by the model, not by you.
+
+The reasoning, and the host metadata that was checked and rejected, is in [ADR 0005](docs/adr/0005-explicit-reply-language.md).
 
 ## Development
 

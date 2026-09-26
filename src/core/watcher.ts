@@ -1,6 +1,7 @@
 import { HerdrTransportError, type HerdrClient, type Subscription } from "../herdr/client.js";
 import type { AgentInfo, AgentStatus, SubscriptionEvent } from "../herdr/types.js";
 import { agentLabel, formatNotification } from "./format.js";
+import { DEFAULT_LANGUAGE, messages, type Language } from "./i18n.js";
 import { formatTargetRef } from "./parse.js";
 import { LOCAL_SERVER_ID } from "./servers.js";
 import {
@@ -173,6 +174,8 @@ export class HerdrWatcher {
     agentId?: string;
     promptPreview: string;
     timeoutMinutes: number;
+    /** Language of the reply that asked; persisted so the notification matches it. */
+    language: Language;
   }): Promise<WatchRecord> {
     const now = this.#now();
     const status = this.#normalizeStatus(input.agent.agent_status, input.agent.pane_id);
@@ -181,7 +184,8 @@ export class HerdrWatcher {
       ...(input.serverId !== undefined ? { serverId: input.serverId } : {}),
       paneId: input.agent.pane_id,
       terminalId: input.agent.terminal_id,
-      agentLabel: agentLabel(input.agent, "agent"),
+      agentLabel: agentLabel(input.agent, messages(input.language).agentFallback),
+      language: input.language,
       sessionKey: input.sessionKey,
       ...(input.agentId ? { agentId: input.agentId } : {}),
       promptPreview: input.promptPreview,
@@ -541,7 +545,7 @@ export class HerdrWatcher {
     const pending: PendingDelivery = {
       status,
       // Remote panes are named with their machine, so the ref can be pasted back.
-      text: formatNotification(observed, status, tail, this.#ref(current)),
+      text: formatNotification(messages(current.language ?? DEFAULT_LANGUAGE), observed, status, tail, this.#ref(current)),
       attempts: 0,
       nextAttemptAt: this.#now().toISOString(),
     };
