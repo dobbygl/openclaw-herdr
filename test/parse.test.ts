@@ -209,6 +209,20 @@ describe("parseHerdrCommand", () => {
         text: "summarize it",
       });
     });
+    it.each(["revisio\u0301n", "समीक्षक"])("accepts combining marks in %s without rewriting the label", (label) => {
+      for (const target of [label, `${label}@buildbox`]) {
+        expect(parseHerdrCommand(EN, `${target}: run tests`)).toEqual({ kind: "send", target, text: "run tests" });
+        for (const kind of ["status", "watch", "unwatch"] as const) {
+          expect(parseHerdrCommand(EN, `${kind} ${target}`)).toEqual({ kind, target });
+        }
+        expect(parseHerdrCommand(EN, `read ${target} 20`)).toEqual({ kind: "read", target, lines: 20 });
+      }
+    });
+    it.each(["bad/label", "\u0301reviewer", "x".repeat(65), "reviewer!"])(
+      "refuses an invalid explicit local target %s", (target) => {
+        expect(errorOf(`${target}: run tests`)).toContain("nothing was sent");
+      },
+    );
     it("keeps prose with a spaced head as a plain prompt", () => {
       expect(parseHerdrCommand(EN, "sample reviewer: hi")).toEqual({ kind: "send", text: "sample reviewer: hi" });
       expect(parseHerdrCommand(EN, "see https://example.com: it fails")).toEqual({
