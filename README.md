@@ -177,6 +177,17 @@ Telegram / WebChat ──► OpenClaw Gateway ──(in-process)──► opencl
 
 Herdr classifies agents with detection rules it updates by itself; this plugin never parses terminal text to decide anything. Details in [docs/ARCHITECTURE.md](docs/ARCHITECTURE.md) and [docs/HERDR_API.md](docs/HERDR_API.md).
 
+The watcher service publishes its runtime through the SDK's shared runtime store
+only after startup succeeds. Commands and tools resolve that runtime at execution
+time: a discovery-only plugin registration must not create a second, inactive
+watcher for tool calls. Service shutdown clears only the runtime it owns.
+Missing session context and an inactive watcher are reported separately.
+
+Release validation: create a watch through `herdr_watch`, settle a disposable
+test agent, and verify a single notification in the originating conversation.
+Repeat with a Gateway restart while the watch is pending. Unit tests do not
+replace this live delivery check.
+
 ## Configuration
 
 Optional keys under `plugins.entries.herdr.config` in `openclaw.json`:

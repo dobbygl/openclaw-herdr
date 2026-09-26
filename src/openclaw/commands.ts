@@ -7,7 +7,7 @@ export const AGENT_GUIDANCE = [
   "A target may name a saved Herdr machine with @label (w6:p1@buildbox); without a suffix it is this host. Remote panes can be listed and read, but prompts only reach the machines the operator allowed.",
 ];
 
-export function registerHerdrCommand(api: HostApi, runtime: HerdrRuntime): void {
+export function registerHerdrCommand(api: HostApi, runtime: HerdrRuntime, resolveRuntime: () => HerdrRuntime = () => runtime): void {
   api.registerCommand({
     name: "herdr",
     description: "Drive coding agents running in Herdr: /herdr list, /herdr <pane>: <prompt>, /herdr status, /herdr read, /herdr watch",
@@ -15,7 +15,7 @@ export function registerHerdrCommand(api: HostApi, runtime: HerdrRuntime): void 
     requireAuth: true,
     agentPromptGuidance: AGENT_GUIDANCE,
     handler: async (ctx) => {
-      const text = await runtime.handleCommand(ctx.args, {
+      const text = await resolveRuntime().handleCommand(ctx.args, {
         ...(ctx.sessionKey ? { sessionKey: ctx.sessionKey } : {}),
         ...(ctx.agentId ? { agentId: ctx.agentId } : {}),
       });
