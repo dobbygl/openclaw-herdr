@@ -163,7 +163,7 @@ export function formatStatus(
 ): string {
   const lines = [formatAgentLine(m, agent, ref, suffix)];
   if (watch) lines.push(m.watchingSince(watch.createdAt));
-  const block = tail ? trimTail(tail, 14) : "";
+  const block = tail ? trimTail(m, tail, 14) : "";
   if (block) lines.push("", block);
   return lines.join("\n");
 }
@@ -182,7 +182,7 @@ export function formatNotification(
       : "finished";
   const parts = [m.notification(kind, who), `> ${preview(watch.promptPreview)}`];
   // Another terminal's output must not be shown as if it were the answer.
-  const block = tail && status !== "occupant_changed" ? trimTail(tail, 20) : "";
+  const block = tail && status !== "occupant_changed" ? trimTail(m, tail, 20) : "";
   if (block) parts.push("", block);
   if (status === "blocked") {
     // Sends are refused while the agent is blocked, so do not promise a reply from chat.
@@ -197,8 +197,8 @@ export function preview(text: string, max = PREVIEW_MAX_CHARS): string {
 }
 
 /** Pane output as a fenced block, bounded in lines, characters and line length. */
-export function trimTail(text: string, maxLines: number, options: PaneBlockOptions = {}): string {
-  const compact = compactPaneText(text, {
+export function trimTail(m: Messages, text: string, maxLines: number, options: PaneBlockOptions = {}): string {
+  const compact = compactPaneText(m, text, {
     maxLines,
     maxChars: options.maxChars ?? PANE_BLOCK_MAX_CHARS,
     maxLineChars: options.maxLineChars ?? PANE_LINE_MAX_CHARS,

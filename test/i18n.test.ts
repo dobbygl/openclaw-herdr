@@ -151,6 +151,7 @@ const baseAgent: AgentInfo = {
 };
 
 interface FakeState {
+  output?: string;
   agents: AgentInfo[];
   prompts: Array<{ target: string; text: string }>;
   /** What `agent.get` reports from now on. */
@@ -163,7 +164,7 @@ function fakeClient(state: FakeState): HerdrClient {
     listAgents: async () => state.agents,
     listTabs: async () => [{ tab_id: "w1:t1", workspace_id: "w1", number: 1, label: "sample#reviewer" }],
     getAgent: async () => state.current,
-    readAgent: async () => ({ text: "All 12 tests passed.\n" }),
+    readAgent: async () => ({ text: state.output ?? "All 12 tests passed.\n" }),
     prompt: async (target: string, text: string) => {
       state.prompts.push({ target, text });
       return {};
@@ -275,6 +276,23 @@ describe("HerdrRuntime in Spanish", () => {
     expect(outputs[13]).toContain('"x@@buildbox" no es un destino válido, así que no envié nada.');
     expect(outputs[14]).toBe("Ningún agente coincide con sample#builder. En marcha: w1:p1 (sample#reviewer).");
     expect(state.prompts).toEqual([{ target: "w1:p1", text: "run the tests" }]);
+  });
+
+  it("localizes truncation in read and blocked-send replies without translating agent text", async () => {
+    const state = freshState();
+    state.output = Array.from({ length: 14 }, (_, i) => `Agent output ${i}: ${"x".repeat(280)}`).join("\n");
+    state.current = { ...baseAgent, agent_status: "blocked" };
+    state.agents = [state.current];
+    const { runtime } = await runtimeIn(await stateDir(), "es", state);
+    for (const output of [
+      await runtime.handleCommand("read w1:p1 20", {}),
+      await runtime.handleCommand("w1:p1: run tests", { sessionKey: "session-a" }),
+    ]) {
+      expect(output).toContain(ES.earlierLinesOmitted(4));
+      expect(output).not.toContain("earlier lines omitted");
+      expect(output).toContain(`Agent output 13: ${"x".repeat(280)}`);
+    }
+    expect(state.prompts).toEqual([]);
   });
 
   it("reports a missing Herdr in Spanish", async () => {

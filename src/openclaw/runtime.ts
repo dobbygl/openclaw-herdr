@@ -186,7 +186,7 @@ export class HerdrRuntime {
       source: "recent",
       lines: lines ?? this.config.readLines,
     });
-    const compact = compactPaneText(read.text, { maxLines: lines ?? this.config.readLines });
+    const compact = compactPaneText(this.messages, read.text, { maxLines: lines ?? this.config.readLines });
     return compact ? "```\n" + compact + "\n```" : this.messages.readEmpty(ref);
   }
 
@@ -217,7 +217,7 @@ export class HerdrRuntime {
       return [
         m.blockedNotSent(ref),
         m.blockedAnswerInTerminal,
-        tail ? "```\n" + compactPaneText(tail, { maxLines: 20 }) + "\n```" : "",
+        tail ? "```\n" + compactPaneText(m, tail, { maxLines: 20 }) + "\n```" : "",
       ].join("\n");
     }
 

@@ -55,6 +55,8 @@ const EN = {
   cannotReachMachine: (label: string, reason: string) => `I cannot reach ${label}: ${reason}.`,
   onMachine: (label: string, message: string) => `On ${label}: ${message}`,
 
+  earlierLinesOmitted: (count: number) => `… (${count} earlier line${count === 1 ? "" : "s"} omitted)`,
+
   // ---- sending ----
   sentTo: (ref: string, label: string) => `Sent to **${ref}** (${label}).`,
   trackingWatching: "I will tell you when it finishes or needs input.",
@@ -240,6 +242,7 @@ const ES: Messages = {
     `No envié nada a **${ref}**: ${label} es de solo lectura.`,
     `Añade "${label}" a remote.allowSend en la configuración del plugin para permitir prompts allí.`,
   ],
+  earlierLinesOmitted: (count) => `… (${count} ${count === 1 ? "línea anterior omitida" : "líneas anteriores omitidas"})`,
   readEmpty: (ref) => `${ref} aún no muestra nada.`,
 
   watchNeedsSession: "Para vigilar hace falta una sesión de OpenClaw a la que avisar.",

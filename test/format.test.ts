@@ -210,14 +210,14 @@ describe("preview", () => {
 
 describe("trimTail", () => {
   it("wraps pane output in a fenced block", () => {
-    expect(trimTail("hello\nworld", 10)).toBe("```\nhello\nworld\n```");
+    expect(trimTail(EN, "hello\nworld", 10)).toBe("```\nhello\nworld\n```");
   });
   it("returns nothing when the pane has nothing to show", () => {
-    expect(trimTail("❯ \n", 10)).toBe("");
-    expect(trimTail("", 10)).toBe("");
+    expect(trimTail(EN, "❯ \n", 10)).toBe("");
+    expect(trimTail(EN, "", 10)).toBe("");
   });
   it("neutralizes a fence in the pane text so the block cannot be closed early", () => {
-    const block = trimTail("cat README.md\n```\ninside\n```", 10);
+    const block = trimTail(EN, "cat README.md\n```\ninside\n```", 10);
     expect(block.startsWith("```\n")).toBe(true);
     expect(block.endsWith("\n```")).toBe(true);
     // Exactly the two fences we added, none from the pane text.
@@ -226,18 +226,18 @@ describe("trimTail", () => {
   });
   it("keeps the block inside the default character budget", () => {
     const huge = Array.from({ length: 400 }, (_, i) => `${i} ` + "x".repeat(80)).join("\n");
-    const block = trimTail(huge, 400);
+    const block = trimTail(EN, huge, 400);
     expect(block).toContain("earlier lines omitted");
     expect(block.length).toBeLessThan(PANE_BLOCK_MAX_CHARS + 128);
   });
   it("accepts a tighter budget from the caller", () => {
     const huge = Array.from({ length: 40 }, (_, i) => `line ${i}`).join("\n");
-    const block = trimTail(huge, 40, { maxChars: 40 });
+    const block = trimTail(EN, huge, 40, { maxChars: 40 });
     expect(block).toContain("earlier lines omitted");
     expect(block.length).toBeLessThan(120);
   });
   it("truncates a very long single line", () => {
-    const block = trimTail("z".repeat(2000), 10);
+    const block = trimTail(EN, "z".repeat(2000), 10);
     const body = block.split("\n")[1] ?? "";
     expect(body).toHaveLength(PANE_LINE_MAX_CHARS);
     expect(body.endsWith("…")).toBe(true);
@@ -312,5 +312,22 @@ describe("formatNotification", () => {
     const out = formatNotification(EN, watch(), "done", huge);
     expect(out.length).toBeLessThan(PANE_BLOCK_MAX_CHARS + 256);
     expect(out).not.toMatch(/x{401}/u);
+  });
+});
+
+describe("localized truncation markers", () => {
+  it.each(["en", "es"] as const)("uses %s in status and watch notifications, preserving agent output", (language) => {
+    const m = messages(language);
+    const tail = Array.from({ length: 14 }, (_, i) => `Agent output ${i}: ${"x".repeat(280)}`).join("\n");
+    for (const output of [formatStatus(m, agent(), tail, undefined), formatNotification(m, watch(), "done", tail)]) {
+      expect(output).toContain(m.earlierLinesOmitted(4));
+      expect(output).toContain(`Agent output 13: ${"x".repeat(280)}`);
+      if (language === "es") expect(output).not.toContain("earlier lines omitted");
+    }
+  });
+  it.each([1, 2])("uses the Spanish marker when omitting %i lines", (count) => {
+    const m = messages("es");
+    const text = [...Array.from({ length: count }, () => "older"), "latest"].join("\n");
+    expect(trimTail(m, text, 20, { maxChars: 6 })).toBe("```\n" + m.earlierLinesOmitted(count) + "\nlatest\n```");
   });
 });

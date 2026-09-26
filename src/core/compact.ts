@@ -1,3 +1,5 @@
+import type { Messages } from "./i18n.js";
+
 /**
  * Cosmetic compaction of pane output for chat clients (Telegram wraps code
  * blocks at ~60 columns on a phone, so a 120-column TUI frame turns into
@@ -38,7 +40,7 @@ export interface CompactOptions {
   maxLineChars?: number;
 }
 
-export function compactPaneText(raw: string, options: CompactOptions = {}): string {
+export function compactPaneText(m: Pick<Messages, "earlierLinesOmitted">, raw: string, options: CompactOptions = {}): string {
   const maxLines = Math.max(1, options.maxLines ?? DEFAULT_MAX_LINES);
   const maxIndent = options.maxIndent ?? 8;
   const maxChars = Math.max(1, options.maxChars ?? DEFAULT_MAX_CHARS);
@@ -78,7 +80,7 @@ export function compactPaneText(raw: string, options: CompactOptions = {}): stri
   }
   while (out.length > 0 && (out[0] === "" || out[0] === "───")) out.shift();
   const kept = out.slice(-maxLines).map((line) => clampLine(line, maxLineChars));
-  return applyCharBudget(kept, maxChars);
+  return applyCharBudget(m, kept, maxChars);
 }
 
 /** Neutralize Markdown fences, then cut an over-long line down to size. */
@@ -88,7 +90,7 @@ function clampLine(line: string, maxLineChars: number): string {
 }
 
 /** Keep the newest lines that fit in `maxChars`; say how many older ones were dropped. */
-function applyCharBudget(lines: string[], maxChars: number): string {
+function applyCharBudget(m: Pick<Messages, "earlierLinesOmitted">, lines: string[], maxChars: number): string {
   const kept: string[] = [];
   let total = 0;
   for (let index = lines.length - 1; index >= 0; index -= 1) {
@@ -100,5 +102,5 @@ function applyCharBudget(lines: string[], maxChars: number): string {
   }
   const omitted = lines.length - kept.length;
   if (omitted === 0) return kept.join("\n");
-  return [`… (${omitted} earlier line${omitted === 1 ? "" : "s"} omitted)`, ...kept].join("\n");
+  return [m.earlierLinesOmitted(omitted), ...kept].join("\n");
 }
