@@ -263,6 +263,8 @@ describe("HerdrRuntime in Spanish", () => {
       await runtime.handleCommand("unwatch w1:p1", caller),
       await runtime.handleCommand("start", caller),
       await runtime.handleCommand("help", caller),
+      await runtime.handleCommand("x@@buildbox: run the tests", caller),
+      await runtime.handleCommand("unwatch sample#builder", caller),
     ];
     for (const out of outputs) expectSpanish(out);
     expect(outputs[4]).toContain("All 12 tests passed.");
@@ -270,6 +272,9 @@ describe("HerdrRuntime in Spanish", () => {
     expect(outputs[6]).toContain('No conozco ningún servidor Herdr llamado "nowhere"');
     expect(outputs[7]).toBe('"@nowhere" no es un destino: falta el selector antes de "@".');
     expect(outputs[8]).toBe(ES.watchNeedsSession);
+    expect(outputs[13]).toContain('"x@@buildbox" no es un destino válido, así que no envié nada.');
+    expect(outputs[14]).toBe("Ningún agente coincide con sample#builder. En marcha: w1:p1 (sample#reviewer).");
+    expect(state.prompts).toEqual([{ target: "w1:p1", text: "run the tests" }]);
   });
 
   it("reports a missing Herdr in Spanish", async () => {
