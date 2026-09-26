@@ -1,5 +1,6 @@
 import type { AgentInfo, AgentStatus } from "../herdr/types.js";
 import { compactPaneText, DEFAULT_MAX_CHARS, DEFAULT_MAX_LINE_CHARS } from "./compact.js";
+import type { Messages, NotificationKind } from "./i18n.js";
 import { agentDisplayName } from "./labels.js";
 import { formatTargetRef } from "./parse.js";
 import { LOCAL_SERVER_ID } from "./servers.js";
@@ -35,9 +36,9 @@ export interface PaneBlockOptions {
  * else its tab label) that name leads, carrying the same `@suffix`, and the
  * pane ref follows as the unambiguous secondary reference.
  */
-export function formatAgentLine(agent: AgentInfo, ref: string = agent.pane_id, suffix?: string): string {
+export function formatAgentLine(m: Messages, agent: AgentInfo, ref: string = agent.pane_id, suffix?: string): string {
   const name = agentDisplayName(agent);
-  const kind = agent.agent ?? "no agent";
+  const kind = agent.agent ?? m.noAgentKind;
   const head = name
     ? `**${formatTargetRef(displayLabel(name), suffix)}** ${kind} · ${ref}`
     : `**${ref}** ${kind}`;
@@ -57,10 +58,15 @@ function displayLabel(name: string): string {
 }
 
 /** The agents of one server. Local-only; {@link formatServerList} groups several. */
-export function formatAgentList(agents: AgentInfo[], watches: WatchRecord[], serverId = LOCAL_SERVER_ID): string {
+export function formatAgentList(
+  m: Messages,
+  agents: AgentInfo[],
+  watches: WatchRecord[],
+  serverId = LOCAL_SERVER_ID,
+): string {
   const live = agents.filter((agent) => agent.agent !== null);
-  if (live.length === 0) return "Herdr sees no running coding agent. Start claude or codex inside a Herdr pane.";
-  return ["Herdr agents:", ...agentLines(live, watches, serverId, undefined)].join("\n");
+  if (live.length === 0) return m.noRunningAgent;
+  return [m.agentsHeader, ...agentLines(m, live, watches, serverId, undefined)].join("\n");
 }
 
 /**
@@ -82,7 +88,7 @@ export interface ServerGroup {
  * cannot be pinged is one line with its reason, so the list still works when
  * half the herd is asleep.
  */
-export function formatServerList(groups: ServerGroup[], watches: WatchRecord[], note?: string): string {
+export function formatServerList(m: Messages, groups: ServerGroup[], watches: WatchRecord[], note?: string): string {
   const lines: string[] = [];
   const onlyLocal = groups.length === 1 && groups[0]?.isLocal === true;
   for (const group of groups) {
@@ -90,31 +96,32 @@ export function formatServerList(groups: ServerGroup[], watches: WatchRecord[], 
     if (group.isLocal) {
       if (group.down) {
         // The local server is the plugin's floor: say what to check, not `down`.
-        lines.push(`Cannot reach Herdr: ${group.down}. Is the Herdr server running?`);
+        lines.push(m.cannotReachHerdr(group.down));
         continue;
       }
       if (live.length === 0 && onlyLocal) {
-        lines.push("Herdr sees no running coding agent. Start claude or codex inside a Herdr pane.");
+        lines.push(m.noRunningAgent);
         continue;
       }
-      lines.push("Herdr agents:");
-      if (live.length === 0) lines.push("no agent on this host");
-      else lines.push(...agentLines(live, watches, group.id, undefined));
+      lines.push(m.agentsHeader);
+      if (live.length === 0) lines.push(m.noAgentOnHost);
+      else lines.push(...agentLines(m, live, watches, group.id, undefined));
       continue;
     }
     if (group.down) {
-      lines.push(`Machine ${group.label}: down — ${group.down}`);
+      lines.push(m.machineDown(group.label, group.down));
       continue;
     }
-    lines.push(`Machine ${group.label}:`);
-    if (live.length === 0) lines.push("no agent there");
-    else lines.push(...agentLines(live, watches, group.id, group.label));
+    lines.push(m.machineHeader(group.label));
+    if (live.length === 0) lines.push(m.noAgentThere);
+    else lines.push(...agentLines(m, live, watches, group.id, group.label));
   }
   if (note) lines.push(note);
   return lines.join("\n");
 }
 
 function agentLines(
+  m: Messages,
   live: AgentInfo[],
   watches: WatchRecord[],
   serverId: string,
@@ -123,7 +130,7 @@ function agentLines(
   return live.map((agent) => {
     const ref = formatTargetRef(agent.pane_id, suffix);
     const watched = watches.some((watch) => samePane(watch, { serverId, paneId: agent.pane_id }));
-    return formatAgentLine(agent, ref, suffix) + (watched ? "\n   watching" : "");
+    return formatAgentLine(m, agent, ref, suffix) + (watched ? `\n   ${m.watchingMark}` : "");
   });
 }
 
@@ -136,62 +143,50 @@ function agentLines(
 export type SendTracking = "watching" | "off" | "tracking_failed";
 
 export function formatSendAccepted(
+  m: Messages,
   agent: AgentInfo,
   text: string,
   tracking: SendTracking,
   ref: string = agent.pane_id,
 ): string {
-  const note =
-    tracking === "watching"
-      ? "I will tell you when it finishes or needs input."
-      : tracking === "off"
-        ? "Not watching; use /herdr status to check."
-        : "It was delivered, but I could not set up the watch, so I will not be able to tell you when it finishes; use /herdr status.";
-  return [`Sent to **${ref}** (${agentLabel(agent)}).`, note, `> ${preview(text)}`].join("\n");
+  const note = tracking === "watching" ? m.trackingWatching : tracking === "off" ? m.trackingOff : m.trackingFailed;
+  return [m.sentTo(ref, agentLabel(agent)), note, `> ${preview(text)}`].join("\n");
 }
 
 export function formatStatus(
+  m: Messages,
   agent: AgentInfo,
   tail: string | undefined,
   watch: WatchRecord | undefined,
   ref: string = agent.pane_id,
   suffix?: string,
 ): string {
-  const lines = [formatAgentLine(agent, ref, suffix)];
-  if (watch) lines.push(`watching since ${watch.createdAt}`);
+  const lines = [formatAgentLine(m, agent, ref, suffix)];
+  if (watch) lines.push(m.watchingSince(watch.createdAt));
   const block = tail ? trimTail(tail, 14) : "";
   if (block) lines.push("", block);
   return lines.join("\n");
 }
 
 export function formatNotification(
+  m: Messages,
   watch: WatchRecord,
   status: SettledStatus,
   tail: string | undefined,
   ref: string = watch.paneId,
 ): string {
   const who = `**${ref}** (${watch.agentLabel})`;
-  const headline =
-    status === "blocked"
-      ? `Herdr: ${who} needs your input.`
-      : status === "exited"
-        ? `Herdr: ${who} exited.`
-        : status === "occupant_changed"
-          ? `Herdr: ${who} is gone; that pane runs something else now, so I stopped watching it.`
-          : status === "timed_out"
-            ? `Herdr: ${who} is still not finished after the watch deadline.`
-            : `Herdr: ${who} finished.`;
-  const parts = [headline, `> ${preview(watch.promptPreview)}`];
+  const kind: NotificationKind =
+    status === "blocked" || status === "exited" || status === "occupant_changed" || status === "timed_out"
+      ? status
+      : "finished";
+  const parts = [m.notification(kind, who), `> ${preview(watch.promptPreview)}`];
   // Another terminal's output must not be shown as if it were the answer.
   const block = tail && status !== "occupant_changed" ? trimTail(tail, 20) : "";
   if (block) parts.push("", block);
   if (status === "blocked") {
     // Sends are refused while the agent is blocked, so do not promise a reply from chat.
-    parts.push(
-      "",
-      "Answer it in the terminal (Herdr or Collie): I cannot answer a prompt for you while the agent is blocked.",
-      `/herdr read ${ref} shows the prompt again. Answering from chat is not implemented yet.`,
-    );
+    parts.push("", m.blockedAnswerHint, m.blockedReadHint(ref));
   }
   return parts.join("\n");
 }

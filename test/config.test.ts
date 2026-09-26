@@ -1,16 +1,20 @@
 import { describe, expect, it } from "vitest";
+import fs from "node:fs";
+import { LANGUAGES } from "../src/core/i18n.js";
 import { readPluginConfig } from "../src/openclaw/config.js";
 
 describe("readPluginConfig", () => {
   it("returns defaults for undefined config", () => {
     const config = readPluginConfig(undefined);
     expect(config).toEqual({
+      language: "en",
       requestTimeoutMs: 5_000,
       watchTimeoutMinutes: 720,
       readLines: 40,
       remote: { enabled: true, allowSend: [] },
     });
     expect(config).not.toHaveProperty("socketPath");
+    expect(config).not.toHaveProperty("invalidLanguage");
     expect(config).not.toHaveProperty("herdrBin");
     expect(config).not.toHaveProperty("sshBin");
   });
@@ -18,6 +22,7 @@ describe("readPluginConfig", () => {
   it("returns defaults for an empty object", () => {
     const config = readPluginConfig({});
     expect(config).toEqual({
+      language: "en",
       requestTimeoutMs: 5_000,
       watchTimeoutMinutes: 720,
       readLines: 40,
@@ -119,5 +124,36 @@ describe("readPluginConfig", () => {
     expect(readPluginConfig({ readLines: 0.5 }).readLines).toBe(1);
     expect(readPluginConfig({ readLines: 1000 }).readLines).toBe(400);
     expect(readPluginConfig({ readLines: 200 }).readLines).toBe(200);
+  });
+
+  describe("language", () => {
+    it("accepts exactly en and es", () => {
+      expect(readPluginConfig({ language: "en" }).language).toBe("en");
+      const spanish = readPluginConfig({ language: "es" });
+      expect(spanish.language).toBe("es");
+      expect(spanish).not.toHaveProperty("invalidLanguage");
+    });
+    it.each([
+      ["fr", '"fr"'],
+      ["ES", '"ES"'],
+      ["es-ES", '"es-ES"'],
+      [" es", '" es"'],
+      ["", '""'],
+      ["auto", '"auto"'],
+      [42, "42"],
+      [null, "null"],
+    ])("falls back to English for %j and reports it", (value, reported) => {
+      const config = readPluginConfig({ language: value });
+      expect(config.language).toBe("en");
+      expect(config.invalidLanguage).toBe(reported);
+    });
+  });
+
+  it("offers the same languages in the manifest as at runtime", () => {
+    const manifest = JSON.parse(fs.readFileSync(new URL("../openclaw.plugin.json", import.meta.url), "utf8")) as {
+      configSchema: { properties: { language: { enum: string[]; default: string } } };
+    };
+    expect(manifest.configSchema.properties.language.enum).toEqual([...LANGUAGES]);
+    expect(manifest.configSchema.properties.language.default).toBe("en");
   });
 });

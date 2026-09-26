@@ -1,3 +1,5 @@
+import { messages, type Messages, type TargetSyntaxProblem } from "./i18n.js";
+
 /**
  * Grammar of the `/herdr` chat command. Kept tiny and explicit so a phone
  * user can type it without looking anything up:
@@ -63,13 +65,17 @@ const TARGET = new RegExp(`^${SELECTOR_SOURCE}(?:@${SERVER_SOURCE})?$`, "iu");
 export const MIN_READ_LINES = 1;
 export const MAX_READ_LINES = 400;
 
-const TARGET_HINT = "a pane id (w6:p1), an agent name, a tab label (sample#reviewer), or an agent kind when unique (claude, codex)";
-
-/** Thrown by {@link parseTargetRef} for a target that cannot be split into a selector and an optional server. */
+/**
+ * Thrown by {@link parseTargetRef} for a target that cannot be split into a
+ * selector and an optional server. `message` is English (logs, tests); chat
+ * words `problem` in the operator's language via `Messages.targetSyntax`.
+ */
 export class TargetSyntaxError extends Error {
-  constructor(message: string) {
-    super(message);
+  readonly problem: TargetSyntaxProblem;
+  constructor(problem: TargetSyntaxProblem) {
+    super(messages("en").targetSyntax(problem));
     this.name = "TargetSyntaxError";
+    this.problem = problem;
   }
 }
 
@@ -83,17 +89,15 @@ export class TargetSyntaxError extends Error {
 export function parseTargetRef(target: string): { selector: string; server?: string } {
   const at = target.lastIndexOf("@");
   if (at === -1) {
-    if (target === "") throw new TargetSyntaxError(`"${target}" is not a target: it is empty.`);
+    if (target === "") throw new TargetSyntaxError({ kind: "empty", target });
     return { selector: target };
   }
   const selector = target.slice(0, at);
   const server = target.slice(at + 1);
-  if (selector === "") throw new TargetSyntaxError(`"${target}" is not a target: the selector before "@" is empty.`);
-  if (selector.includes("@")) {
-    throw new TargetSyntaxError(`"${target}" is not a target: a selector cannot contain "@".`);
-  }
+  if (selector === "") throw new TargetSyntaxError({ kind: "empty_selector", target });
+  if (selector.includes("@")) throw new TargetSyntaxError({ kind: "selector_at", target });
   if (server === "" || !new RegExp(`^${SERVER_SOURCE}$`, "u").test(server)) {
-    throw new TargetSyntaxError(`"${target}" is not a target: "@${server}" is not a valid machine suffix.`);
+    throw new TargetSyntaxError({ kind: "bad_server", target, server });
   }
   return { selector, server };
 }
@@ -103,7 +107,9 @@ export function formatTargetRef(selector: string, server?: string): string {
   return server ? `${selector}@${server}` : selector;
 }
 
-export function parseHerdrCommand(rawArgs: string | undefined): HerdrCommand {
+/** Parses `/herdr …`. `m` words the usage errors; the grammar is the same in every language. */
+export function parseHerdrCommand(m: Messages, rawArgs: string | undefined): HerdrCommand {
+  const hint = m.targetHint;
   const args = (rawArgs ?? "").trim();
   if (args === "" || args === "help" || args === "?") return { kind: "help" };
 
@@ -116,26 +122,24 @@ export function parseHerdrCommand(rawArgs: string | undefined): HerdrCommand {
   if (word === "status" || word === "st") {
     if (tail === "") return { kind: "status" };
     if (TARGET.test(tail)) return { kind: "status", target: tail };
-    return error(`"${tail}" is not a target. Usage: /herdr status [target] — ${TARGET_HINT}.`);
+    return error(m.statusNotTarget(tail, hint));
   }
 
   if (word === "read" || word === "tail") {
     const [target, count, ...extra] = rest;
     if (target === undefined) {
-      return error(`Usage: /herdr read <target> [lines ${MIN_READ_LINES}-${MAX_READ_LINES}] — target is ${TARGET_HINT}.`);
+      return error(m.readUsage(MIN_READ_LINES, MAX_READ_LINES, hint));
     }
     if (!TARGET.test(target)) {
-      return error(
-        `"${target}" is not a target. Usage: /herdr read <target> [lines ${MIN_READ_LINES}-${MAX_READ_LINES}]; to send prose use /herdr <target>: ${args}.`,
-      );
+      return error(m.readNotTarget(target, MIN_READ_LINES, MAX_READ_LINES, args));
     }
     if (extra.length > 0) {
-      return error(`Usage: /herdr read <target> [lines ${MIN_READ_LINES}-${MAX_READ_LINES}] — one target and one line count.`);
+      return error(m.readExtra(MIN_READ_LINES, MAX_READ_LINES));
     }
     if (count === undefined) return { kind: "read", target };
     const lines = readLineCount(count);
     if (lines === undefined) {
-      return error(`"${count}" is not a line count; use a whole number between ${MIN_READ_LINES} and ${MAX_READ_LINES}.`);
+      return error(m.readBadCount(count, MIN_READ_LINES, MAX_READ_LINES));
     }
     return { kind: "read", target, lines };
   }
@@ -144,14 +148,14 @@ export function parseHerdrCommand(rawArgs: string | undefined): HerdrCommand {
     // `/herdr start <name> [kind] [pane id | path]` — positional, phone-friendly.
     // A token shaped like a pane id (w1:p2) picks an existing idle shell pane;
     // a token starting with ~ / or . is the directory of a new pane.
-    const usage = "Usage: /herdr start <name> [kind] [pane id or cwd] — e.g. /herdr start reviewer codex ~/project";
+    const usage = m.startUsage;
     const [rawName, ...more] = rest;
-    if (rawName === undefined) return error(`${usage} (kind defaults to ${DEFAULT_AGENT_KIND}).`);
+    if (rawName === undefined) return error(m.startUsageDefault(usage, DEFAULT_AGENT_KIND));
     const at = rawName.lastIndexOf("@");
     const bareName = at > 0 ? rawName.slice(0, at) : rawName;
     const server = at > 0 ? rawName.slice(at + 1) : undefined;
     if (!AGENT_NAME.test(bareName) || (server !== undefined && !new RegExp(`^${SERVER_SOURCE}$`, "u").test(server))) {
-      return error(`"${rawName}" is not a usable agent name: lowercase letters, digits, "_" or "-", up to 32 characters, optionally @machine.`);
+      return error(m.startBadName(rawName));
     }
     let agentKind: string | undefined;
     let paneId: string | undefined;
@@ -160,7 +164,7 @@ export function parseHerdrCommand(rawArgs: string | undefined): HerdrCommand {
       if (/^[a-z][a-z0-9]*:p[0-9]+$/iu.test(token) && paneId === undefined && cwd === undefined) paneId = token;
       else if ((token.startsWith("/") || token.startsWith("~") || token.startsWith(".")) && cwd === undefined && paneId === undefined) cwd = token;
       else if (/^[a-z][a-z0-9-]{0,20}$/u.test(token) && agentKind === undefined) agentKind = token;
-      else return error(`Did not understand "${token}". ${usage}.`);
+      else return error(m.startBadToken(token, usage));
     }
     return {
       kind: "start",
@@ -174,9 +178,7 @@ export function parseHerdrCommand(rawArgs: string | undefined): HerdrCommand {
   if (word === "watch" || word === "unwatch") {
     if (rest.length === 1 && TARGET.test(rest[0] ?? "")) return { kind: word, target: rest[0] as string };
     return error(
-      rest.length === 0
-        ? `Usage: /herdr ${word} <target> — ${TARGET_HINT}.`
-        : `Usage: /herdr ${word} <target> — one target only; ${TARGET_HINT}.`,
+      rest.length === 0 ? m.watchUsage(word, hint) : m.watchOneTarget(word, hint),
     );
   }
 
@@ -193,7 +195,7 @@ export function parseHerdrCommand(rawArgs: string | undefined): HerdrCommand {
   // into a local pane what was meant for another machine.
   const explicitHead = /^(\S+?):\s+\S/u.exec(args)?.[1];
   if (explicitHead !== undefined && explicitHead.includes("@")) {
-    return error(`"${explicitHead}" is not a valid target, so nothing was sent. A target is ${TARGET_HINT}, optionally followed by @machine.`);
+    return error(m.invalidExplicitTarget(explicitHead, hint));
   }
   return { kind: "send", text: args };
 }
@@ -214,16 +216,7 @@ function readLineCount(raw: string): number | undefined {
   return value;
 }
 
-export const HELP_TEXT = [
-  "Herdr commands:",
-  "/herdr list — agents Herdr sees",
-  "/herdr <target>: <prompt> — send and watch",
-  "/herdr <prompt> — send to the only agent",
-  "/herdr status [target]",
-  `/herdr read <target> [lines ${MIN_READ_LINES}-${MAX_READ_LINES}]`,
-  "/herdr watch <target> · /herdr unwatch <target>",
-  "/herdr start <name> [kind] [pane id or cwd] — start an agent (kind defaults to claude) in that pane, or in a new one",
-  `Targets: ${TARGET_HINT}; a pane id wins over a name, a name over a tab label, a tab label over a kind.`,
-  "Add @machine to target a saved Herdr machine: w9:p1@buildbox",
-  "list/status/read/watch/unwatch/start are commands: to send a prompt that starts with one, use /herdr <target>: <prompt>.",
-].join("\n");
+/** `/herdr help` in the operator's language; the command lines themselves are identical in every language. */
+export function helpText(m: Messages): string {
+  return m.help(MIN_READ_LINES, MAX_READ_LINES, m.targetHint).join("\n");
+}

@@ -49,6 +49,15 @@
     "type": "object",
     "additionalProperties": false,
     "properties": {
+      "language": {
+        "type": "string",
+        "enum": [
+          "en",
+          "es"
+        ],
+        "default": "en",
+        "description": "Language of the plugin's own replies and watch notifications: en (English, default) or es (Spanish). Pane ids, names, paths, command syntax and agent output are never translated."
+      },
       "socketPath": {
         "type": "string",
         "description": "Herdr server socket. Defaults to $HERDR_SOCKET_PATH or ~/.config/herdr/herdr.sock."

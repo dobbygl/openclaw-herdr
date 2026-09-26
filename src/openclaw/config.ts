@@ -1,4 +1,13 @@
+import { readLanguage, type Language } from "../core/i18n.js";
+
 export interface HerdrPluginConfig {
+  /**
+   * Language of the plugin's own chat text: `en` (default) or `es`. There is
+   * no `auto`: OpenClaw exposes no trusted user language to plugins.
+   */
+  language: Language;
+  /** The rejected raw `language` value, when one was given and is not supported. */
+  invalidLanguage?: string;
   socketPath?: string;
   requestTimeoutMs: number;
   watchTimeoutMinutes: number;
@@ -62,7 +71,11 @@ export function readPluginConfig(raw: Record<string, unknown> | undefined): Herd
   const nestedAllowSend = remoteConfig?.["allowSend"];
   const allowSendRaw = Array.isArray(nestedAllowSend) ? nestedAllowSend : config["remoteAllowSend"];
 
+  const { language, invalid: invalidLanguage } = readLanguage(config["language"]);
+
   return {
+    language,
+    ...(invalidLanguage !== undefined ? { invalidLanguage } : {}),
     ...(socketPath ? { socketPath } : {}),
     requestTimeoutMs: number("requestTimeoutMs", 5_000),
     watchTimeoutMinutes: number("watchTimeoutMinutes", 720),

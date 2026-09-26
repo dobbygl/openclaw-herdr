@@ -7,6 +7,7 @@ import type { AgentInfo, PaneReadResult, SubscriptionEvent, SubscriptionSpec } f
 import { WatchStore, type WatchRecord } from "../src/core/watch-store.js";
 import { LOCAL_SERVER_ID } from "../src/core/servers.js";
 import { HerdrWatcher, type Notifier, type SettledStatus, type WatcherClient } from "../src/core/watcher.js";
+import type { Language } from "../src/core/i18n.js";
 
 const LOCAL_PANE = { serverId: LOCAL_SERVER_ID, paneId: "w1:p1" };
 
@@ -199,13 +200,16 @@ afterEach(async () => {
   dirs = [];
 });
 
-function startWatch(options: { sessionKey?: string; agent?: Partial<AgentInfo>; serverId?: string } = {}) {
+function startWatch(
+  options: { sessionKey?: string; agent?: Partial<AgentInfo>; serverId?: string; language?: Language } = {},
+) {
   return watcher.watch({
     agent: { ...baseAgent, ...options.agent },
     ...(options.serverId !== undefined ? { serverId: options.serverId } : {}),
     sessionKey: options.sessionKey ?? "s1",
     promptPreview: "run the tests",
     timeoutMinutes: 10,
+    language: options.language ?? "en",
   });
 }
 
