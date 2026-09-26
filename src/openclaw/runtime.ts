@@ -11,7 +11,7 @@ import {
 } from "../core/format.js";
 import {
   formatTargetRef,
-  HELP_TEXT,
+  helpText,
   parseHerdrCommand,
   parseTargetRef,
   TargetSyntaxError,
@@ -20,6 +20,7 @@ import {
 import { LOCAL_SERVER_ID, ServerRegistry, shortReason, type ServerDescription } from "../core/servers.js";
 import { listLabelledAgents } from "../core/labels.js";
 import { resolveTarget } from "../core/targets.js";
+import { messages, type Messages } from "../core/i18n.js";
 import { WatchStore, type WatchRecord } from "../core/watch-store.js";
 import { HerdrWatcher, type Notifier } from "../core/watcher.js";
 import type { HerdrPluginConfig } from "./config.js";
@@ -61,6 +62,8 @@ type LocateOutcome = { ok: true; target: LocatedTarget } | { ok: false; message:
  */
 export class HerdrRuntime {
   readonly client: HerdrClient;
+  /** The plugin's own chat text, in `config.language`. */
+  readonly messages: Messages;
   #registry: ServerRegistry | undefined;
   #store: WatchStore | undefined;
   #watcher: HerdrWatcher | undefined;
@@ -75,6 +78,10 @@ export class HerdrRuntime {
     registry?: ServerRegistry,
   ) {
     this.#logger = logger;
+    this.messages = messages(config.language);
+    if (config.invalidLanguage !== undefined) {
+      logger.warn?.(`herdr: language ${config.invalidLanguage} is not supported (en, es); replying in English`);
+    }
     this.client =
       client ??
       new HerdrClient({
@@ -132,11 +139,11 @@ export class HerdrRuntime {
 
   /** Entry point for `/herdr ...`. Always returns chat-ready text. */
   async handleCommand(rawArgs: string | undefined, caller: Caller): Promise<string> {
-    const command = parseHerdrCommand(rawArgs);
+    const command = parseHerdrCommand(this.messages, rawArgs);
     try {
       return await this.#run(command, caller);
     } catch (error) {
-      return describeFailure(error);
+      return describeFailure(this.messages, error);
     }
   }
 
@@ -148,15 +155,12 @@ export class HerdrRuntime {
   async list(): Promise<string> {
     const registry = this.#registry;
     const watches = this.#store?.list() ?? [];
-    if (!registry) return formatAgentList(await listLabelledAgents(this.client), watches);
+    const m = this.messages;
+    if (!registry) return formatAgentList(m, await listLabelledAgents(this.client), watches);
     const servers = await registry.servers();
     const groups = await Promise.all(servers.map((server) => this.#groupFor(registry, server)));
     const catalogError = registry.catalogError();
-    return formatServerList(
-      groups,
-      watches,
-      catalogError ? `Machine list unavailable: ${catalogError}` : undefined,
-    );
+    return formatServerList(m, groups, watches, catalogError ? m.machineListUnavailable(catalogError) : undefined);
   }
 
   async status(target: string | undefined): Promise<string> {
@@ -165,6 +169,7 @@ export class HerdrRuntime {
     const { agent, client, server, ref } = located.target;
     const tail = await this.#safeRead(client, agent.pane_id, 12);
     return formatStatus(
+      this.messages,
       agent,
       tail,
       this.#store?.byPane({ serverId: server.id, paneId: agent.pane_id }),
@@ -182,7 +187,7 @@ export class HerdrRuntime {
       lines: lines ?? this.config.readLines,
     });
     const compact = compactPaneText(read.text, { maxLines: lines ?? this.config.readLines });
-    return compact ? "```\n" + compact + "\n```" : `${ref} shows nothing yet.`;
+    return compact ? "```\n" + compact + "\n```" : this.messages.readEmpty(ref);
   }
 
   /**
@@ -204,13 +209,14 @@ export class HerdrRuntime {
     const located = await this.#locate(target, { onAmbiguous: "line" });
     if (!located.ok) return located.message;
     const { agent, client, server, ref } = located.target;
+    const m = this.messages;
     const refusal = this.#refuseSend(server, ref);
     if (refusal) return refusal;
     if (agent.agent_status === "blocked") {
       const tail = await this.#safeRead(client, agent.pane_id, 20);
       return [
-        `${ref} is waiting for input, so I did not send anything.`,
-        "Read the prompt below and answer it in the terminal (Herdr or Collie); answering from chat is not implemented yet.",
+        m.blockedNotSent(ref),
+        m.blockedAnswerInTerminal,
         tail ? "```\n" + compactPaneText(tail, { maxLines: 20 }) + "\n```" : "",
       ].join("\n");
     }
@@ -230,6 +236,7 @@ export class HerdrRuntime {
           ...(caller.agentId ? { agentId: caller.agentId } : {}),
           promptPreview: preview(text),
           timeoutMinutes: this.config.watchTimeoutMinutes,
+          language: this.config.language,
         });
       } catch (error) {
         trackingFailed = true;
@@ -244,15 +251,13 @@ export class HerdrRuntime {
         // We do not know whether Herdr got it. Keep the watch: if the prompt
         // did land, the subscription still reports the completion.
         return [
-          `I could not confirm the send to **${ref}**: ${error.message}.`,
-          record
-            ? "The prompt may have been delivered; I am still watching, so check /herdr status before resending."
-            : "The prompt may have been delivered; check /herdr status before resending.",
+          m.sendUnconfirmed(ref, error.message),
+          record ? m.sendMaybeDeliveredWatching : m.sendMaybeDelivered,
           `> ${preview(text)}`,
         ].join("\n");
       }
       if (record) await watcher?.cancel(record.id);
-      return `Nothing was sent to ${ref}. ${describeFailure(error)}`;
+      return m.nothingSent(ref, describeFailure(m, error));
     }
 
     if (record && watcher) {
@@ -260,11 +265,12 @@ export class HerdrRuntime {
       // and the pane may even have changed hands. `reconcile` never throws.
       await watcher.reconcile(record.id, "post-prompt");
     }
-    return formatSendAccepted(agent, text, record ? "watching" : trackingFailed ? "tracking_failed" : "off", ref);
+    return formatSendAccepted(m, agent, text, record ? "watching" : trackingFailed ? "tracking_failed" : "off", ref);
   }
 
   async watch(target: string, caller: Caller): Promise<string> {
-    if (!caller.sessionKey || !this.#watcher) return "Watching needs an OpenClaw session to report back to.";
+    const m = this.messages;
+    if (!caller.sessionKey || !this.#watcher) return m.watchNeedsSession;
     const located = await this.#locate(target);
     if (!located.ok) return located.message;
     const { agent, server, ref } = located.target;
@@ -274,13 +280,14 @@ export class HerdrRuntime {
         serverId: server.id,
         sessionKey: caller.sessionKey,
         ...(caller.agentId ? { agentId: caller.agentId } : {}),
-        promptPreview: agent.terminal_title_stripped ?? "(current task)",
+        promptPreview: agent.terminal_title_stripped ?? m.currentTask,
         timeoutMinutes: this.config.watchTimeoutMinutes,
+        language: this.config.language,
       });
     } catch (error) {
-      return `I am not watching ${ref}: ${shortMessage(error)}. Try again once it answers.`;
+      return m.watchFailed(ref, shortMessage(error));
     }
-    return `Watching ${ref} (${agent.agent_status}). I will tell you when it finishes or blocks.`;
+    return m.watchStarted(ref, agent.agent_status);
   }
 
   /**
@@ -292,11 +299,12 @@ export class HerdrRuntime {
    */
   async startAgent(options: StartAgentOptions): Promise<string> {
     const { name: rawName, agentKind, cwd } = options;
+    const m = this.messages;
     let parsed: { selector: string; server?: string };
     try {
       parsed = parseTargetRef(rawName);
     } catch (error) {
-      if (error instanceof TargetSyntaxError) return error.message;
+      if (error instanceof TargetSyntaxError) return m.targetSyntax(error.problem);
       throw error;
     }
     const name = parsed.selector;
@@ -314,13 +322,13 @@ export class HerdrRuntime {
     try {
       const agents = await client.listAgents();
       const taken = agents.find((agent) => agent.agent !== null && agent.name === name);
-      if (taken) return `${formatTargetRef(name, suffix)} already runs ${taken.agent} in **${taken.pane_id}**; pick another name.`;
+      if (taken) return m.startNameTaken(formatTargetRef(name, suffix), taken.agent ?? "", taken.pane_id);
       const panes = await client.listPanes();
       let pane = options.paneId
         ? panes.find((candidate) => candidate.pane_id === options.paneId)
         : panes.find((candidate) => (candidate.label ?? "") === name && !candidate.agent);
-      if (options.paneId && !pane) return `There is no pane ${formatTargetRef(options.paneId, suffix)}.`;
-      if (options.paneId && pane?.agent) return `${formatTargetRef(options.paneId, suffix)} already runs ${pane.agent}; Herdr needs an idle shell pane.`;
+      if (options.paneId && !pane) return m.startNoPane(formatTargetRef(options.paneId, suffix));
+      if (options.paneId && pane?.agent) return m.startPaneBusy(formatTargetRef(options.paneId, suffix), pane.agent);
       let created = false;
       if (!pane) {
         pane = await client.createTab({ label: name, ...(cwd ? { cwd } : {}), focus: false });
@@ -338,12 +346,12 @@ export class HerdrRuntime {
       });
       const ref = formatTargetRef(agent.pane_id, suffix);
       return [
-        `Started **${name}** (${agentKind}) in **${ref}**${created ? " (new pane)" : ""}.`,
-        `Send work with /herdr ${formatTargetRef(name, suffix)}: <prompt>.`,
+        m.started(name, agentKind, ref, created),
+        m.startSendHint(formatTargetRef(name, suffix)),
       ].join("\n");
     } catch (error) {
       if (error instanceof HerdrRequestError) {
-        return `Herdr could not start ${agentKind} as ${name}: ${error.message} (${error.code}).`;
+        return m.startRefused(agentKind, name, error.message, error.code);
       }
       return this.#unreachable(server.server, error);
     }
@@ -358,12 +366,13 @@ export class HerdrRuntime {
    */
   async unwatch(target: string, caller: Caller): Promise<string> {
     const watcher = this.#watcher;
-    if (!watcher) return "Watcher is not running.";
+    const m = this.messages;
+    if (!watcher) return m.watcherNotRunning;
     let parsed: { selector: string; server?: string };
     try {
       parsed = parseTargetRef(target);
     } catch (error) {
-      if (error instanceof TargetSyntaxError) return error.message;
+      if (error instanceof TargetSyntaxError) return m.targetSyntax(error.problem);
       throw error;
     }
     const server = await this.#resolveServer(parsed.server);
@@ -381,28 +390,26 @@ export class HerdrRuntime {
       if (!literalPane) return this.#unreachable(server.server, error);
       agents = [];
     }
-    const resolved = resolveTarget(agents, parsed.selector);
+    const resolved = resolveTarget(m, agents, parsed.selector);
     if (!resolved.ok && (resolved.reason === "ambiguous" || !literalPane)) {
-      return server.server.isLocal ? resolved.message : `On ${server.server.label}: ${resolved.message}`;
+      return server.server.isLocal ? resolved.message : m.onMachine(server.server.label, resolved.message);
     }
     const paneId = resolved.ok ? resolved.agent.pane_id : parsed.selector;
     const ref = formatTargetRef(paneId, suffix);
     const paneRef = { serverId: server.server.id, paneId };
     if (!caller.sessionKey) {
       const removed = await watcher.unwatch(paneRef);
-      return removed > 0
-        ? `Stopped watching ${ref} (${removed} watch${removed === 1 ? "" : "es"}).`
-        : `${ref} was not being watched.`;
+      return removed > 0 ? m.unwatchedCount(ref, removed) : m.notWatched(ref);
     }
-    if ((await watcher.unwatch(paneRef, caller.sessionKey)) > 0) return `Stopped watching ${ref}.`;
+    if ((await watcher.unwatch(paneRef, caller.sessionKey)) > 0) return m.unwatched(ref);
     const others = this.#store?.listByPane(paneRef).length ?? 0;
-    return others > 0 ? `${ref} is watched by another chat, not by this one.` : `${ref} was not being watched.`;
+    return others > 0 ? m.watchedElsewhere(ref) : m.notWatched(ref);
   }
 
   async #run(command: HerdrCommand, caller: Caller): Promise<string> {
     switch (command.kind) {
       case "help":
-        return HELP_TEXT;
+        return helpText(this.messages);
       case "list":
         return this.list();
       case "status":
@@ -443,7 +450,7 @@ export class HerdrRuntime {
         selector = parsed.selector;
         serverName = parsed.server;
       } catch (error) {
-        if (error instanceof TargetSyntaxError) return { ok: false, message: error.message };
+        if (error instanceof TargetSyntaxError) return { ok: false, message: this.messages.targetSyntax(error.problem) };
         throw error;
       }
     }
@@ -468,18 +475,18 @@ export class HerdrRuntime {
       if (live.length !== 1) {
         // `status` shows the whole herd (that is the question it answers); a
         // prompt gets one short line naming the candidates, not a wall of text.
-        const ambiguity = resolveTarget(agents, undefined);
+        const ambiguity = resolveTarget(this.messages, agents, undefined);
         if (options.onAmbiguous === "line" && !ambiguity.ok) return { ok: false, message: ambiguity.message };
         return { ok: false, message: await this.list() };
       }
       selector = (live[0] as AgentInfo).pane_id;
     }
-    const resolved = resolveTarget(agents, selector);
+    const resolved = resolveTarget(this.messages, agents, selector);
     if (!resolved.ok) {
       // Which herd was searched matters: `w1:p1` exists on several machines.
       return {
         ok: false,
-        message: server.server.isLocal ? resolved.message : `On ${server.server.label}: ${resolved.message}`,
+        message: server.server.isLocal ? resolved.message : this.messages.onMachine(server.server.label, resolved.message),
       };
     }
     const suffix = server.server.isLocal ? undefined : server.server.label;
@@ -502,9 +509,10 @@ export class HerdrRuntime {
       if (name === undefined || name === LOCAL_SERVER_ID) {
         return { ok: true, server: { id: LOCAL_SERVER_ID, label: LOCAL_SERVER_ID, isLocal: true } };
       }
-      return { ok: false, message: `I know no Herdr server called "${name}". Known: ${LOCAL_SERVER_ID}.` };
+      return { ok: false, message: this.messages.server({ kind: "unknown", server: name, known: [LOCAL_SERVER_ID] }) };
     }
-    return registry.resolve(name);
+    const resolved = await registry.resolve(name);
+    return resolved.ok ? resolved : { ok: false, message: this.messages.server(resolved.problem) };
   }
 
   /** Always through the registry, so `local` has exactly one client too. */
@@ -537,15 +545,12 @@ export class HerdrRuntime {
   #refuseSend(server: ServerDescription, ref: string): string | undefined {
     if (server.isLocal) return undefined;
     if (this.#registry?.allowsSend(server.id) ?? false) return undefined;
-    return [
-      `I did not send anything to **${ref}**: ${server.label} is read-only.`,
-      `Add "${server.label}" to remote.allowSend in the plugin config to allow prompts there.`,
-    ].join("\n");
+    return this.messages.readOnly(ref, server.label).join("\n");
   }
 
   #unreachable(server: ServerDescription, error: unknown): string {
-    if (server.isLocal) return describeFailure(error);
-    return `I cannot reach ${server.label}: ${shortMessage(error)}.`;
+    if (server.isLocal) return describeFailure(this.messages, error);
+    return this.messages.cannotReachMachine(server.label, shortMessage(error));
   }
 
   async #safeRead(client: HerdrClient, paneId: string, lines: number): Promise<string | undefined> {
@@ -569,13 +574,12 @@ function shortMessage(error: unknown): string {
   return shortReason(describeError(error));
 }
 
-export function describeFailure(error: unknown): string {
+/** A failure in the operator's language. Herdr's own message and code stay verbatim. */
+export function describeFailure(m: Messages, error: unknown): string {
   if (error instanceof HerdrRequestError) {
-    if (error.code === "agent_blocked") return "The agent is waiting at a prompt; answer it first (see /herdr read).";
-    return `Herdr refused: ${error.message} (${error.code}).`;
+    if (error.code === "agent_blocked") return m.agentBlocked;
+    return m.herdrRefused(error.message, error.code);
   }
-  if (error instanceof HerdrTransportError) {
-    return `Cannot reach Herdr: ${error.message}. Is the Herdr server running?`;
-  }
-  return `Herdr plugin error: ${(error as Error).message ?? String(error)}`;
+  if (error instanceof HerdrTransportError) return m.cannotReachHerdr(error.message);
+  return m.pluginError((error as Error).message ?? String(error));
 }

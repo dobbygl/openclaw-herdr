@@ -2,6 +2,7 @@ import fs from "node:fs/promises";
 import path from "node:path";
 import { randomUUID } from "node:crypto";
 import type { AgentStatus } from "../herdr/types.js";
+import { isLanguage, type Language } from "./i18n.js";
 import { LOCAL_SERVER_ID } from "./servers.js";
 
 /**
@@ -61,6 +62,12 @@ export interface WatchRecord {
   /** Herdr terminal that occupied the pane when the watch started. */
   terminalId: string;
   agentLabel: string;
+  /**
+   * Language of the chat reply that created this watch, so its notification
+   * speaks the same language even after a restart with another setting.
+   * Absent on records written before the setting existed: those are English.
+   */
+  language?: Language;
   /** OpenClaw session that asked; notifications go back there. */
   sessionKey: string;
   agentId?: string;
@@ -340,6 +347,8 @@ function readRecord(value: unknown): ReadOutcome {
     notificationSeq: readCount(value.notificationSeq),
   };
   if (typeof value.agentId === "string" && value.agentId) record.agentId = value.agentId;
+  // An unknown language is dropped, not quarantined: the watch still works, in English.
+  if (isLanguage(value.language)) record.language = value.language;
   if (isFiniteNumber(value.seqAtStart)) record.seqAtStart = value.seqAtStart;
   if (isFiniteNumber(value.lastSeq)) record.lastSeq = value.lastSeq;
   if (typeof value.lastStatus === "string") record.lastStatus = value.lastStatus;

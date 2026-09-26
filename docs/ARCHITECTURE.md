@@ -36,6 +36,7 @@ sides speak the exact same newline-delimited JSON protocol.
 | `src/herdr/types.ts` | Hand-written types for those methods, taken from `herdr api schema --json` (protocol 22). |
 | `src/core/parse.ts` | `/herdr` grammar → `HerdrCommand`; also splits a target into `selector` and an optional `@server`. |
 | `src/core/targets.ts` | Selector → exactly one live agent (within one server's `agent.list`), or a precise refusal. |
+| `src/core/i18n.ts` | Typed English and Spanish catalogs of every chat sentence; the `language` setting's parser. See ADR 0005. |
 | `src/core/labels.ts` | Joins `agent.list` with `tab.list` so an agent carries its operator-assigned tab label; display-name precedence (agent name, then tab label). |
 | `src/core/servers.ts` | `ServerRegistry`: which Herdr servers exist (`local` plus every discovered machine), one `HerdrClient` per server, health tracking and the `remote.allowSend` gate. |
 | `src/core/watch-store.ts` | Durable JSON list of watches in the plugin state dir; each record carries a `serverId`. |

@@ -2,6 +2,8 @@
 
 ## Unreleased
 
+- Reply language: a `language` setting (`en` default, `es`) localizes `/herdr` replies, tool results, usage errors, help and watch notifications, with no model call. OpenClaw exposes no trusted user language to plugins, so there is no auto-detection; the manifest accepts only `en` and `es` (the host rejects other values), and the runtime falls back to English with a warning if one gets through. Each watch persists the language of the reply that created it. Ids, names, labels, paths, command syntax, agent states and agent output are never translated. See ADR 0005.
+
 - Operator-assigned tab labels (from `tab.list`) name agents that have no Herdr name: `/herdr list` and `status` lead with the name and keep the pane id as the secondary ref, and a label such as `sample#reviewer` (or `sample#reviewer@buildbox`) is a target between agent name and agent kind. A label on several tabs, or a tab with several agents, is refused with the candidate pane ids, by `unwatch` too. Selectors accept digits, dots and non-ASCII letters, so every label the list shows can be typed; a malformed machine-qualified target is refused instead of being sent to the only local agent. A Herdr without `tab.list` falls back to ids and names; any other `tab.list` failure is reported.
 
 - `start` waits for a brand-new pane's shell to reach its prompt and retries Herdr's `agent_pane_busy`; a machine label shared by several saved profiles is refused with their ids instead of picking the first.

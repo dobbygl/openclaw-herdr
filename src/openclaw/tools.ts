@@ -13,11 +13,11 @@ function caller(ctx: HostToolContext) {
   };
 }
 
-async function guarded(run: () => Promise<string>): Promise<HostToolResult> {
+async function guarded(runtime: HerdrRuntime, run: () => Promise<string>): Promise<HostToolResult> {
   try {
     return text(await run());
   } catch (error) {
-    return text(describeFailure(error));
+    return text(describeFailure(runtime.messages, error));
   }
 }
 
@@ -34,7 +34,7 @@ export function registerHerdrTools(api: HostApi, runtime: HerdrRuntime): void {
       description:
         "List the coding agents Herdr currently sees, with name (Herdr agent name or operator tab label, when set), pane id, kind, state and working directory. Local agents first, then one group per saved Herdr machine (refs like w1:p1@buildbox); a machine that cannot be reached is shown as down.",
       parameters: Type.Object({}, { additionalProperties: false }),
-      execute: () => guarded(() => runtime.list()),
+      execute: () => guarded(runtime, () => runtime.list()),
     }),
     (ctx) => ({
       name: "herdr_send",
@@ -51,7 +51,7 @@ export function registerHerdrTools(api: HostApi, runtime: HerdrRuntime): void {
       ),
       execute: (_id, params) => {
         const p = params as { target?: string; text: string; watch?: boolean };
-        return guarded(() => runtime.send(p.target, p.text, caller(ctx), p.watch ?? true));
+        return guarded(runtime, () => runtime.send(p.target, p.text, caller(ctx), p.watch ?? true));
       },
     }),
     () => ({
@@ -64,7 +64,7 @@ export function registerHerdrTools(api: HostApi, runtime: HerdrRuntime): void {
       ),
       execute: (_id, params) => {
         const p = params as { target: string; lines?: number };
-        return guarded(() => runtime.read(p.target, p.lines));
+        return guarded(runtime, () => runtime.read(p.target, p.lines));
       },
     }),
     (ctx) => ({
@@ -72,7 +72,7 @@ export function registerHerdrTools(api: HostApi, runtime: HerdrRuntime): void {
       label: "Herdr: watch agent",
       description: "Watch an agent that is already working and get a '[Herdr watch event]' when it finishes or blocks.",
       parameters: Type.Object({ target: TargetParam }, { additionalProperties: false }),
-      execute: (_id, params) => guarded(() => runtime.watch((params as { target: string }).target, caller(ctx))),
+      execute: (_id, params) => guarded(runtime, () => runtime.watch((params as { target: string }).target, caller(ctx))),
     }),
     () => ({
       name: "herdr_start",
@@ -92,7 +92,7 @@ export function registerHerdrTools(api: HostApi, runtime: HerdrRuntime): void {
       ),
       execute: (_id, params) => {
         const p = params as { name: string; kind?: string; pane?: string; cwd?: string; timeoutMs?: number; args?: string[] };
-        return guarded(() =>
+        return guarded(runtime, () =>
           runtime.startAgent({
             name: p.name,
             agentKind: p.kind ?? "claude",
@@ -109,7 +109,7 @@ export function registerHerdrTools(api: HostApi, runtime: HerdrRuntime): void {
       label: "Herdr: status",
       description: "Current state of one agent (or all when target is omitted) plus the tail of its output.",
       parameters: Type.Object({ target: Type.Optional(TargetParam) }, { additionalProperties: false }),
-      execute: (_id, params) => guarded(() => runtime.status((params as { target?: string }).target)),
+      execute: (_id, params) => guarded(runtime, () => runtime.status((params as { target?: string }).target)),
     }),
   ];
   for (const factory of tools) {

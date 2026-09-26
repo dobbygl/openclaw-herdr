@@ -2,59 +2,62 @@ import { describe, expect, it } from "vitest";
 import {
   commandErrorText,
   formatTargetRef,
-  HELP_TEXT,
+  helpText,
   MAX_READ_LINES,
   MIN_READ_LINES,
   parseHerdrCommand,
   parseTargetRef,
   TargetSyntaxError,
 } from "../src/core/parse.js";
+import { messages } from "../src/core/i18n.js";
+
+const EN = messages("en");
 
 const errorOf = (args: string): string => {
-  const command = parseHerdrCommand(args);
+  const command = parseHerdrCommand(EN, args);
   expect(command.kind).toBe("error");
   return commandErrorText(command) ?? "";
 };
 
 describe("parseHerdrCommand", () => {
   it("maps bare and help forms", () => {
-    expect(parseHerdrCommand(undefined)).toEqual({ kind: "help" });
-    expect(parseHerdrCommand("  help ")).toEqual({ kind: "help" });
+    expect(parseHerdrCommand(EN, undefined)).toEqual({ kind: "help" });
+    expect(parseHerdrCommand(EN, "  help ")).toEqual({ kind: "help" });
   });
   it("parses list, status, read, watch and unwatch", () => {
-    expect(parseHerdrCommand("list")).toEqual({ kind: "list" });
-    expect(parseHerdrCommand("status")).toEqual({ kind: "status" });
-    expect(parseHerdrCommand("status w6:p1")).toEqual({ kind: "status", target: "w6:p1" });
-    expect(parseHerdrCommand("read claude 30")).toEqual({ kind: "read", target: "claude", lines: 30 });
-    expect(parseHerdrCommand("read w6:p1")).toEqual({ kind: "read", target: "w6:p1" });
-    expect(parseHerdrCommand("watch reviewer")).toEqual({ kind: "watch", target: "reviewer" });
-    expect(parseHerdrCommand("unwatch w6:p1")).toEqual({ kind: "unwatch", target: "w6:p1" });
+    expect(parseHerdrCommand(EN, "list")).toEqual({ kind: "list" });
+    expect(parseHerdrCommand(EN, "status")).toEqual({ kind: "status" });
+    expect(parseHerdrCommand(EN, "status w6:p1")).toEqual({ kind: "status", target: "w6:p1" });
+    expect(parseHerdrCommand(EN, "read claude 30")).toEqual({ kind: "read", target: "claude", lines: 30 });
+    expect(parseHerdrCommand(EN, "read w6:p1")).toEqual({ kind: "read", target: "w6:p1" });
+    expect(parseHerdrCommand(EN, "watch reviewer")).toEqual({ kind: "watch", target: "reviewer" });
+    expect(parseHerdrCommand(EN, "unwatch w6:p1")).toEqual({ kind: "unwatch", target: "w6:p1" });
   });
   it("parses targeted and untargeted sends", () => {
-    expect(parseHerdrCommand("w6:p1: run the tests")).toEqual({ kind: "send", target: "w6:p1", text: "run the tests" });
-    expect(parseHerdrCommand("claude: summarize: this repo")).toEqual({
+    expect(parseHerdrCommand(EN, "w6:p1: run the tests")).toEqual({ kind: "send", target: "w6:p1", text: "run the tests" });
+    expect(parseHerdrCommand(EN, "claude: summarize: this repo")).toEqual({
       kind: "send",
       target: "claude",
       text: "summarize: this repo",
     });
-    expect(parseHerdrCommand("run the tests and explain failures")).toEqual({
+    expect(parseHerdrCommand(EN, "run the tests and explain failures")).toEqual({
       kind: "send",
       text: "run the tests and explain failures",
     });
   });
   it("does not mistake prose with a colon for a target", () => {
-    expect(parseHerdrCommand("Note: check the logs")).toEqual({ kind: "send", target: "Note", text: "check the logs" });
-    expect(parseHerdrCommand("please do this: and that")).toEqual({ kind: "send", text: "please do this: and that" });
+    expect(parseHerdrCommand(EN, "Note: check the logs")).toEqual({ kind: "send", target: "Note", text: "check the logs" });
+    expect(parseHerdrCommand(EN, "please do this: and that")).toEqual({ kind: "send", text: "please do this: and that" });
   });
 
   describe("read line counts", () => {
     it("accepts the whole supported range", () => {
-      expect(parseHerdrCommand(`read w6:p1 ${MIN_READ_LINES}`)).toEqual({
+      expect(parseHerdrCommand(EN, `read w6:p1 ${MIN_READ_LINES}`)).toEqual({
         kind: "read",
         target: "w6:p1",
         lines: MIN_READ_LINES,
       });
-      expect(parseHerdrCommand(`read w6:p1 ${MAX_READ_LINES}`)).toEqual({
+      expect(parseHerdrCommand(EN, `read w6:p1 ${MAX_READ_LINES}`)).toEqual({
         kind: "read",
         target: "w6:p1",
         lines: MAX_READ_LINES,
@@ -106,16 +109,16 @@ describe("parseHerdrCommand", () => {
   });
 
   it("keeps prose sends working, including reserved words inside a prompt", () => {
-    expect(parseHerdrCommand("listen to the failing test first")).toEqual({
+    expect(parseHerdrCommand(EN, "listen to the failing test first")).toEqual({
       kind: "send",
       text: "listen to the failing test first",
     });
-    expect(parseHerdrCommand("w6:p1: read the README and summarize it")).toEqual({
+    expect(parseHerdrCommand(EN, "w6:p1: read the README and summarize it")).toEqual({
       kind: "send",
       target: "w6:p1",
       text: "read the README and summarize it",
     });
-    expect(parseHerdrCommand("w6:p1: status")).toEqual({ kind: "send", target: "w6:p1", text: "status" });
+    expect(parseHerdrCommand(EN, "w6:p1: status")).toEqual({ kind: "send", target: "w6:p1", text: "status" });
   });
 
   it("commandErrorText only speaks for error commands", () => {
@@ -125,42 +128,42 @@ describe("parseHerdrCommand", () => {
   });
 
   it("documents the read range and the reserved words in the help text", () => {
-    expect(HELP_TEXT).toContain(`lines ${MIN_READ_LINES}-${MAX_READ_LINES}`);
-    expect(HELP_TEXT).toContain("/herdr <target>: <prompt>");
+    expect(helpText(EN)).toContain(`lines ${MIN_READ_LINES}-${MAX_READ_LINES}`);
+    expect(helpText(EN)).toContain("/herdr <target>: <prompt>");
   });
 
   it("documents @server targets in the help text, short and phone-friendly", () => {
-    expect(HELP_TEXT).toContain("@machine");
-    expect(HELP_TEXT).toContain("buildbox");
-    const serverLine = HELP_TEXT.split("\n").find((line) => line.includes("@machine"));
+    expect(helpText(EN)).toContain("@machine");
+    expect(helpText(EN)).toContain("buildbox");
+    const serverLine = helpText(EN).split("\n").find((line) => line.includes("@machine"));
     expect(serverLine?.length).toBeLessThan(70);
   });
 
   describe("selector@server targets", () => {
     it("parses suffixed targets for status, read, watch and unwatch", () => {
-      expect(parseHerdrCommand("status w9:p1@buildbox")).toEqual({ kind: "status", target: "w9:p1@buildbox" });
-      expect(parseHerdrCommand("read reviewer@buildbox 30")).toEqual({
+      expect(parseHerdrCommand(EN, "status w9:p1@buildbox")).toEqual({ kind: "status", target: "w9:p1@buildbox" });
+      expect(parseHerdrCommand(EN, "read reviewer@buildbox 30")).toEqual({
         kind: "read",
         target: "reviewer@buildbox",
         lines: 30,
       });
-      expect(parseHerdrCommand("read claude@buildbox")).toEqual({ kind: "read", target: "claude@buildbox" });
-      expect(parseHerdrCommand("watch w9:p1@buildbox")).toEqual({ kind: "watch", target: "w9:p1@buildbox" });
-      expect(parseHerdrCommand("unwatch w9:p1@buildbox")).toEqual({ kind: "unwatch", target: "w9:p1@buildbox" });
+      expect(parseHerdrCommand(EN, "read claude@buildbox")).toEqual({ kind: "read", target: "claude@buildbox" });
+      expect(parseHerdrCommand(EN, "watch w9:p1@buildbox")).toEqual({ kind: "watch", target: "w9:p1@buildbox" });
+      expect(parseHerdrCommand(EN, "unwatch w9:p1@buildbox")).toEqual({ kind: "unwatch", target: "w9:p1@buildbox" });
     });
 
     it("parses a suffixed target on the send form, splitting on the first colon-space", () => {
-      expect(parseHerdrCommand("w9:p1@buildbox: run the tests")).toEqual({
+      expect(parseHerdrCommand(EN, "w9:p1@buildbox: run the tests")).toEqual({
         kind: "send",
         target: "w9:p1@buildbox",
         text: "run the tests",
       });
-      expect(parseHerdrCommand("reviewer@buildbox: run the tests")).toEqual({
+      expect(parseHerdrCommand(EN, "reviewer@buildbox: run the tests")).toEqual({
         kind: "send",
         target: "reviewer@buildbox",
         text: "run the tests",
       });
-      expect(parseHerdrCommand("claude@buildbox: run the tests")).toEqual({
+      expect(parseHerdrCommand(EN, "claude@buildbox: run the tests")).toEqual({
         kind: "send",
         target: "claude@buildbox",
         text: "run the tests",
@@ -170,19 +173,19 @@ describe("parseHerdrCommand", () => {
 
   describe("tab label targets", () => {
     it("accepts a label with # on every command and on the send form", () => {
-      expect(parseHerdrCommand("status sample#reviewer")).toEqual({ kind: "status", target: "sample#reviewer" });
-      expect(parseHerdrCommand("read sample#builder@buildbox 20")).toEqual({
+      expect(parseHerdrCommand(EN, "status sample#reviewer")).toEqual({ kind: "status", target: "sample#reviewer" });
+      expect(parseHerdrCommand(EN, "read sample#builder@buildbox 20")).toEqual({
         kind: "read",
         target: "sample#builder@buildbox",
         lines: 20,
       });
-      expect(parseHerdrCommand("watch sample#reviewer")).toEqual({ kind: "watch", target: "sample#reviewer" });
-      expect(parseHerdrCommand("sample#reviewer: run the tests")).toEqual({
+      expect(parseHerdrCommand(EN, "watch sample#reviewer")).toEqual({ kind: "watch", target: "sample#reviewer" });
+      expect(parseHerdrCommand(EN, "sample#reviewer: run the tests")).toEqual({
         kind: "send",
         target: "sample#reviewer",
         text: "run the tests",
       });
-      expect(parseHerdrCommand("sample#builder@buildbox: run the tests")).toEqual({
+      expect(parseHerdrCommand(EN, "sample#builder@buildbox: run the tests")).toEqual({
         kind: "send",
         target: "sample#builder@buildbox",
         text: "run the tests",
@@ -190,25 +193,25 @@ describe("parseHerdrCommand", () => {
       expect(parseTargetRef("sample#builder@buildbox")).toEqual({ selector: "sample#builder", server: "buildbox" });
     });
     it("accepts every label the list can show as a name: digits, dots and non-ASCII letters", () => {
-      expect(parseHerdrCommand("status 7")).toEqual({ kind: "status", target: "7" });
-      expect(parseHerdrCommand("status sample.review")).toEqual({ kind: "status", target: "sample.review" });
-      expect(parseHerdrCommand("read revisión 20")).toEqual({ kind: "read", target: "revisión", lines: 20 });
-      expect(parseHerdrCommand("sample.review@buildbox: run tests")).toEqual({
+      expect(parseHerdrCommand(EN, "status 7")).toEqual({ kind: "status", target: "7" });
+      expect(parseHerdrCommand(EN, "status sample.review")).toEqual({ kind: "status", target: "sample.review" });
+      expect(parseHerdrCommand(EN, "read revisión 20")).toEqual({ kind: "read", target: "revisión", lines: 20 });
+      expect(parseHerdrCommand(EN, "sample.review@buildbox: run tests")).toEqual({
         kind: "send",
         target: "sample.review@buildbox",
         text: "run tests",
       });
-      expect(parseHerdrCommand("7: run tests")).toEqual({ kind: "send", target: "7", text: "run tests" });
+      expect(parseHerdrCommand(EN, "7: run tests")).toEqual({ kind: "send", target: "7", text: "run tests" });
       // A dotted head is a target now; an unknown one is refused, never sent.
-      expect(parseHerdrCommand("README.md: summarize it")).toEqual({
+      expect(parseHerdrCommand(EN, "README.md: summarize it")).toEqual({
         kind: "send",
         target: "README.md",
         text: "summarize it",
       });
     });
     it("keeps prose with a spaced head as a plain prompt", () => {
-      expect(parseHerdrCommand("sample reviewer: hi")).toEqual({ kind: "send", text: "sample reviewer: hi" });
-      expect(parseHerdrCommand("see https://example.com: it fails")).toEqual({
+      expect(parseHerdrCommand(EN, "sample reviewer: hi")).toEqual({ kind: "send", text: "sample reviewer: hi" });
+      expect(parseHerdrCommand(EN, "see https://example.com: it fails")).toEqual({
         kind: "send",
         text: "see https://example.com: it fails",
       });
@@ -216,7 +219,7 @@ describe("parseHerdrCommand", () => {
     it.each(["x@@buildbox: run tests", "a@b@c: run tests", "sample@-bad: run tests", "@buildbox: run tests"])(
       "refuses a malformed machine-qualified head instead of sending it to the only agent (%s)",
       (input) => {
-        const command = parseHerdrCommand(input);
+        const command = parseHerdrCommand(EN, input);
         expect(command.kind).toBe("error");
         if (command.kind === "error") expect(command.message).toContain("nothing was sent");
       },
@@ -290,23 +293,23 @@ describe("parseHerdrCommand", () => {
 
 describe("parseHerdrCommand start", () => {
   it("parses name, optional kind and an optional pane id or cwd, in any order", () => {
-    expect(parseHerdrCommand("start cuento")).toEqual({ kind: "start", name: "cuento", agentKind: "claude" });
-    expect(parseHerdrCommand("start reviewer codex")).toEqual({ kind: "start", name: "reviewer", agentKind: "codex" });
-    expect(parseHerdrCommand("start cuento claude w7:p2")).toEqual({ kind: "start", name: "cuento", agentKind: "claude", paneId: "w7:p2" });
-    expect(parseHerdrCommand("start cuento w7:p2")).toEqual({ kind: "start", name: "cuento", agentKind: "claude", paneId: "w7:p2" });
-    expect(parseHerdrCommand("start reviewer ~/project codex")).toEqual({
+    expect(parseHerdrCommand(EN, "start cuento")).toEqual({ kind: "start", name: "cuento", agentKind: "claude" });
+    expect(parseHerdrCommand(EN, "start reviewer codex")).toEqual({ kind: "start", name: "reviewer", agentKind: "codex" });
+    expect(parseHerdrCommand(EN, "start cuento claude w7:p2")).toEqual({ kind: "start", name: "cuento", agentKind: "claude", paneId: "w7:p2" });
+    expect(parseHerdrCommand(EN, "start cuento w7:p2")).toEqual({ kind: "start", name: "cuento", agentKind: "claude", paneId: "w7:p2" });
+    expect(parseHerdrCommand(EN, "start reviewer ~/project codex")).toEqual({
       kind: "start",
       name: "reviewer",
       agentKind: "codex",
       cwd: "~/project",
     });
-    expect(parseHerdrCommand("start writer@buildbox codex")).toEqual({ kind: "start", name: "writer@buildbox", agentKind: "codex" });
+    expect(parseHerdrCommand(EN, "start writer@buildbox codex")).toEqual({ kind: "start", name: "writer@buildbox", agentKind: "codex" });
   });
   it("rejects bad names, flags and stray tokens", () => {
-    expect(parseHerdrCommand("start").kind).toBe("error");
-    expect(parseHerdrCommand("start Cuento").kind).toBe("error");
-    expect(parseHerdrCommand("start cuento --kind codex").kind).toBe("error");
-    expect(parseHerdrCommand("start cuento codex claude").kind).toBe("error");
-    expect(parseHerdrCommand("start cuento w7:p2 ~/x").kind).toBe("error");
+    expect(parseHerdrCommand(EN, "start").kind).toBe("error");
+    expect(parseHerdrCommand(EN, "start Cuento").kind).toBe("error");
+    expect(parseHerdrCommand(EN, "start cuento --kind codex").kind).toBe("error");
+    expect(parseHerdrCommand(EN, "start cuento codex claude").kind).toBe("error");
+    expect(parseHerdrCommand(EN, "start cuento w7:p2 ~/x").kind).toBe("error");
   });
 });

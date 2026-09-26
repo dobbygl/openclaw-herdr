@@ -28,6 +28,7 @@ import path from "node:path";
 import { HerdrClient, HerdrTransportError } from "../herdr/client.js";
 import { MachineCatalog, resolveRemoteSocketPath, type Machine } from "../herdr/machines.js";
 import { createSshConnectionFactory } from "../herdr/ssh-stdio.js";
+import { messages, type ServerProblem } from "./i18n.js";
 
 /** The host this plugin runs on: the default server, and the only local one. */
 export const LOCAL_SERVER_ID = "local";
@@ -48,7 +49,8 @@ export interface ServerHealth {
 
 export type ResolveServerResult =
   | { ok: true; server: ServerDescription }
-  | { ok: false; message: string };
+  /** `message` is English (logs, tests); chat words `problem` via `Messages.server`. */
+  | { ok: false; message: string; problem: ServerProblem };
 
 export interface ServerRegistryLogger {
   info?: (message: string) => void;
@@ -183,20 +185,17 @@ export class ServerRegistry {
     const machines = await this.#machines();
     const byLabel = machines.filter((machine) => machine.label === server);
     if (byLabel.length > 1) {
-      return {
-        ok: false,
-        message: `"${server}" names ${byLabel.length} saved machines; use a profile id instead: ${byLabel.map((machine) => machine.id).join(", ")} (see herdr machine list).`,
-      };
+      return refuse({ kind: "ambiguous_label", server, ids: byLabel.map((machine) => machine.id) });
     }
     const match = byLabel[0] ?? machines.find((machine) => machine.id === server);
     if (match) return { ok: true, server: { id: match.id, label: match.label, isLocal: false } };
-    const known = [LOCAL_SERVER_ID, ...machines.map((machine) => machine.label)].join(", ");
-    const why = this.#catalogError
-      ? ` I could not read the machine list: ${this.#catalogError}.`
-      : !this.remoteEnabled
-        ? " Remote machines are disabled in the plugin config."
-        : "";
-    return { ok: false, message: `I know no Herdr server called "${server}". Known: ${known}.${why}` };
+    return refuse({
+      kind: "unknown",
+      server,
+      known: [LOCAL_SERVER_ID, ...machines.map((machine) => machine.label)],
+      ...(this.#catalogError ? { catalogError: this.#catalogError } : {}),
+      ...(!this.remoteEnabled ? { remoteDisabled: true } : {}),
+    });
   }
 
   /** Synchronous, cheap and never throws: display only. */
@@ -387,6 +386,10 @@ export class ServerRegistry {
   #now(): number {
     return this.#options.now?.() ?? Date.now();
   }
+}
+
+function refuse(problem: ServerProblem): ResolveServerResult {
+  return { ok: false, message: messages("en").server(problem), problem };
 }
 
 /**

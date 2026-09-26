@@ -1,5 +1,6 @@
 import type { AgentInfo } from "../herdr/types.js";
 import { LABEL_MAX_CHARS, preview } from "./format.js";
+import type { Messages, TargetLevel } from "./i18n.js";
 import { agentDisplayName } from "./labels.js";
 
 export type TargetResolution =
@@ -7,12 +8,12 @@ export type TargetResolution =
   | { ok: false; reason: "none" | "ambiguous" | "not_found"; message: string; candidates: AgentInfo[] };
 
 /** Selector kinds, most specific first. A level is only consulted when every earlier level matched nothing. */
-const LEVELS: ReadonlyArray<{ label: string; hint: string; value: (agent: AgentInfo) => string }> = [
-  { label: "pane id", hint: "use a terminal id", value: (agent) => agent.pane_id },
-  { label: "terminal id", hint: "use a pane id", value: (agent) => agent.terminal_id },
-  { label: "agent name", hint: "use a pane id", value: (agent) => agent.name ?? "" },
-  { label: "tab label", hint: "use a pane id", value: (agent) => agent.tab_label ?? "" },
-  { label: "agent kind", hint: "use a pane id", value: (agent) => agent.agent ?? "" },
+const LEVELS: ReadonlyArray<{ level: TargetLevel; hint: "useTerminalId" | "usePaneId"; value: (agent: AgentInfo) => string }> = [
+  { level: "pane_id", hint: "useTerminalId", value: (agent) => agent.pane_id },
+  { level: "terminal_id", hint: "usePaneId", value: (agent) => agent.terminal_id },
+  { level: "agent_name", hint: "usePaneId", value: (agent) => agent.name ?? "" },
+  { level: "tab_label", hint: "usePaneId", value: (agent) => agent.tab_label ?? "" },
+  { level: "agent_kind", hint: "usePaneId", value: (agent) => agent.agent ?? "" },
 ];
 
 /**
@@ -27,17 +28,17 @@ const LEVELS: ReadonlyArray<{ label: string; hint: string; value: (agent: AgentI
  * plugin never guesses. A tab label is also refused when it is on more than
  * one tab, even if only one of those tabs runs an agent.
  */
-export function resolveTarget(agents: AgentInfo[], selector?: string): TargetResolution {
+export function resolveTarget(m: Messages, agents: AgentInfo[], selector?: string): TargetResolution {
   const live = agents.filter((agent) => agent.agent !== null);
   if (!selector || selector.trim() === "") {
     if (live.length === 1) return { ok: true, agent: live[0] as AgentInfo };
     if (live.length === 0) {
-      return { ok: false, reason: "none", message: "Herdr sees no running coding agent.", candidates: [] };
+      return { ok: false, reason: "none", message: m.noAgentRunning, candidates: [] };
     }
     return {
       ok: false,
       reason: "ambiguous",
-      message: `Several agents are running; name one: ${describeCandidates(live)}.`,
+      message: m.severalAgents(describeCandidates(live)),
       candidates: live,
     };
   }
@@ -49,7 +50,7 @@ export function resolveTarget(agents: AgentInfo[], selector?: string): TargetRes
     return {
       ok: false,
       reason: "not_found",
-      message: `${selector} looks like a selector@server target; machine suffixes are resolved per machine.`,
+      message: m.selectorHasServer(selector),
       candidates: [],
     };
   }
@@ -58,12 +59,13 @@ export function resolveTarget(agents: AgentInfo[], selector?: string): TargetRes
       const value = level.value(agent);
       return value !== "" && value.toLowerCase() === wanted;
     });
-    const sharedTabs = matches.find((agent) => level.label === "tab label" && agent.tab_label_tab_ids)?.tab_label_tab_ids;
+    const hint = m[level.hint];
+    const sharedTabs = matches.find((agent) => level.level === "tab_label" && agent.tab_label_tab_ids)?.tab_label_tab_ids;
     if (sharedTabs) {
       return {
         ok: false,
         reason: "ambiguous",
-        message: `${selector} labels ${sharedTabs.length} tabs (${sharedTabs.join(", ")}); ${level.hint}: ${describeCandidates(matches)}.`,
+        message: m.labelOnTabs(selector, sharedTabs.length, sharedTabs.join(", "), hint, describeCandidates(matches)),
         candidates: matches,
       };
     }
@@ -72,7 +74,7 @@ export function resolveTarget(agents: AgentInfo[], selector?: string): TargetRes
       return {
         ok: false,
         reason: "ambiguous",
-        message: `${selector} matches ${matches.length} agents by ${level.label}; ${level.hint}: ${describeCandidates(matches)}.`,
+        message: m.ambiguousTarget(selector, matches.length, m.levelName(level.level), hint, describeCandidates(matches)),
         candidates: matches,
       };
     }
@@ -81,9 +83,7 @@ export function resolveTarget(agents: AgentInfo[], selector?: string): TargetRes
     ok: false,
     reason: "not_found",
     message:
-      live.length === 0
-        ? `No agent matches ${selector}; Herdr sees no running coding agent.`
-        : `No agent matches ${selector}. Running: ${describeCandidates(live)}.`,
+      live.length === 0 ? m.noMatchNoAgents(selector) : m.noMatch(selector, describeCandidates(live)),
     candidates: live,
   };
 }
@@ -99,6 +99,10 @@ export function describeCandidates(agents: AgentInfo[]): string {
  * the runtime's job, this just resolves the bare selector against whatever
  * agent list is passed in.
  */
-export function resolveTargetRef(agents: AgentInfo[], ref: { selector?: string; server?: string }): TargetResolution {
-  return resolveTarget(agents, ref.selector);
+export function resolveTargetRef(
+  m: Messages,
+  agents: AgentInfo[],
+  ref: { selector?: string; server?: string },
+): TargetResolution {
+  return resolveTarget(m, agents, ref.selector);
 }
