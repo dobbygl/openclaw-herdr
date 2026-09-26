@@ -46,13 +46,16 @@ export const KNOWN_AGENT_KINDS = ["claude", "codex", "gemini", "pi", "opencode",
 const DEFAULT_AGENT_KIND = "claude";
 
 /**
- * A bare selector (pane id, terminal id, agent name or agent kind) may carry
+ * A bare selector (pane id, terminal id, agent name, tab label or agent kind)
+ * starts with a letter or digit (any script, so `revisión` or `7` work) and
+ * continues with letters, digits, `_`, `.`, `:`, `-` or `#` (tab labels like
+ * `sample#reviewer`). No spaces and no `@`. It may carry
  * a trailing `@<server>` naming a saved Herdr machine, e.g. `w9:p1@buildbox`,
  * `reviewer@buildbox`, `claude@buildbox`. `<server>` is a Herdr machine label
  * or profile id: it must start with an alphanumeric and may continue with
  * alphanumerics, `.`, `_` or `-`.
  */
-const SELECTOR_SOURCE = "[a-z][a-z0-9_:-]{0,40}";
+const SELECTOR_SOURCE = "[\\p{L}\\p{N}][\\p{L}\\p{N}_.:#-]{0,63}";
 const SERVER_SOURCE = "[A-Za-z0-9][A-Za-z0-9._-]{0,63}";
 const TARGET = new RegExp(`^${SELECTOR_SOURCE}(?:@${SERVER_SOURCE})?$`, "iu");
 
@@ -60,7 +63,7 @@ const TARGET = new RegExp(`^${SELECTOR_SOURCE}(?:@${SERVER_SOURCE})?$`, "iu");
 export const MIN_READ_LINES = 1;
 export const MAX_READ_LINES = 400;
 
-const TARGET_HINT = "a pane id (w6:p1), an agent name, or an agent kind when unique (claude, codex)";
+const TARGET_HINT = "a pane id (w6:p1), an agent name, a tab label (sample#reviewer), or an agent kind when unique (claude, codex)";
 
 /** Thrown by {@link parseTargetRef} for a target that cannot be split into a selector and an optional server. */
 export class TargetSyntaxError extends Error {
@@ -180,10 +183,17 @@ export function parseHerdrCommand(rawArgs: string | undefined): HerdrCommand {
   // "<target>: <prompt>" — the target ends at the first colon that is
   // followed by whitespace, so pane ids like w6:p1 keep their own colon,
   // and an optional trailing @server is captured along with the selector.
-  const targetedPattern = new RegExp(`^([A-Za-z][\\w:-]{0,40}(?:@${SERVER_SOURCE})?):\\s+(\\S[\\s\\S]*)$`, "u");
+  const targetedPattern = new RegExp(`^(${SELECTOR_SOURCE}(?:@${SERVER_SOURCE})?):\\s+(\\S[\\s\\S]*)$`, "u");
   const targeted = targetedPattern.exec(args);
   if (targeted && TARGET.test(targeted[1] ?? "")) {
     return { kind: "send", target: targeted[1] as string, text: (targeted[2] as string).trim() };
+  }
+  // A head that names a machine (`x@buildbox: …`) is an explicit target even
+  // when it is malformed. Degrading it to "send to the only agent" would type
+  // into a local pane what was meant for another machine.
+  const explicitHead = /^(\S+?):\s+\S/u.exec(args)?.[1];
+  if (explicitHead !== undefined && explicitHead.includes("@")) {
+    return error(`"${explicitHead}" is not a valid target, so nothing was sent. A target is ${TARGET_HINT}, optionally followed by @machine.`);
   }
   return { kind: "send", text: args };
 }
@@ -213,7 +223,7 @@ export const HELP_TEXT = [
   `/herdr read <target> [lines ${MIN_READ_LINES}-${MAX_READ_LINES}]`,
   "/herdr watch <target> · /herdr unwatch <target>",
   "/herdr start <name> [kind] [pane id or cwd] — start an agent (kind defaults to claude) in that pane, or in a new one",
-  `Targets: ${TARGET_HINT}; a pane id wins over a name, a name over a kind.`,
+  `Targets: ${TARGET_HINT}; a pane id wins over a name, a name over a tab label, a tab label over a kind.`,
   "Add @machine to target a saved Herdr machine: w9:p1@buildbox",
   "list/status/read/watch/unwatch/start are commands: to send a prompt that starts with one, use /herdr <target>: <prompt>.",
 ].join("\n");

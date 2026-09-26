@@ -29,6 +29,7 @@ function fakeClient(overrides: Partial<Record<keyof HerdrClient, unknown>> = {})
     prompts,
     subscriptions: 0,
     listAgents: async () => agents,
+    listTabs: async () => [],
     getAgent: async (target: string) => {
       trace.push(`getAgent:${target}`);
       return agents.find((a) => a.pane_id === target);
@@ -205,6 +206,179 @@ describe("HerdrRuntime commands", () => {
  * is exactly the confusion the `@server` suffix has to prevent. No real machine
  * is contacted.
  */
+describe("HerdrRuntime with tab labels", () => {
+  // The issue's shape, with synthetic names: two single-pane tabs, agents
+  // without a Herdr name, labels only in `tab.list`.
+  const herd: AgentInfo[] = [
+    { pane_id: "w1:p1", workspace_id: "w1", tab_id: "w1:t1", terminal_id: "term_1", agent: "claude", agent_status: "idle", focused: false, revision: 1 },
+    { pane_id: "w1:p2", workspace_id: "w1", tab_id: "w1:t2", terminal_id: "term_2", agent: "codex", agent_status: "idle", focused: false, revision: 1 },
+  ];
+  const tabs = [
+    { tab_id: "w1:t1", workspace_id: "w1", number: 1, label: "sample#reviewer" },
+    { tab_id: "w1:t2", workspace_id: "w1", number: 2, label: "sample#builder" },
+  ];
+  const labelled = (listTabs: () => Promise<unknown>) =>
+    fakeClient({ listAgents: async () => herd, listTabs, getAgent: async (target: string) => herd.find((a) => a.pane_id === target) });
+
+  it("lists labels first and sends to a tab label", async () => {
+    const client = labelled(async () => tabs);
+    const { runtime } = await makeRuntime(client);
+    const list = await runtime.handleCommand("list", {});
+    expect(list).toContain("**sample#reviewer** claude · w1:p1 · idle");
+    expect(list).toContain("**sample#builder** codex · w1:p2 · idle");
+    const out = await runtime.handleCommand("sample#builder: run the tests", { sessionKey: "s1" });
+    expect(client.prompts).toEqual([{ target: "w1:p2", text: "run the tests" }]);
+    expect(out).toContain("Sent to **w1:p2** (sample#builder).");
+    expect(await runtime.handleCommand("status sample#reviewer", {})).toContain("**sample#reviewer** claude · w1:p1");
+  });
+
+  it("falls back to ids and kinds when Herdr does not know tab.list", async () => {
+    const client = labelled(async () => {
+      throw new HerdrRequestError({ code: "invalid_request", message: "invalid request: unknown variant `tab.list`" });
+    });
+    const { runtime } = await makeRuntime(client);
+    expect(await runtime.handleCommand("list", {})).toContain("**w1:p1** claude · idle");
+    const missing = await runtime.handleCommand("sample#builder: run the tests", { sessionKey: "s1" });
+    expect(missing).toContain("No agent matches sample#builder");
+    await runtime.handleCommand("codex: run the tests", { sessionKey: "s1" });
+    expect(client.prompts).toEqual([{ target: "w1:p2", text: "run the tests" }]);
+  });
+
+  it("refuses to send when tab.list is refused for another reason", async () => {
+    const client = labelled(async () => {
+      throw new HerdrRequestError({ code: "permission_denied", message: "tab.list is not allowed" });
+    });
+    const { runtime } = await makeRuntime(client);
+    const out = await runtime.handleCommand("w1:p2: run the tests", { sessionKey: "s1" });
+    expect(out).toContain("permission_denied");
+    expect(client.prompts).toEqual([]);
+    // `/herdr list` shows the refusal in place of a herd, never an unlabelled one.
+    const list = await runtime.handleCommand("list", {});
+    expect(list).toContain("tab.list is not allowed (permission_denied)");
+    expect(list).not.toContain("w1:p1");
+  });
+
+  it("reports a tab.list transport failure instead of an unlabelled herd", async () => {
+    const client = labelled(async () => {
+      throw new HerdrTransportError("Herdr socket error for tab.list: connection reset");
+    });
+    const { runtime } = await makeRuntime(client);
+    const out = await runtime.handleCommand("w1:p2: run the tests", { sessionKey: "s1" });
+    expect(out).toContain("Cannot reach Herdr");
+    expect(client.prompts).toEqual([]);
+  });
+});
+
+describe("HerdrRuntime label regressions", () => {
+  const row = (pane: string, tab: string): AgentInfo => ({
+    pane_id: pane,
+    workspace_id: "w1",
+    tab_id: tab,
+    terminal_id: `term_${pane}`,
+    agent: "claude",
+    agent_status: "idle",
+    focused: false,
+    revision: 1,
+    state_change_seq: 1,
+  });
+  const labelled = (herd: { agents: AgentInfo[]; tabs: unknown[]; down?: boolean }) =>
+    fakeClient({
+      listAgents: async () => {
+        if (herd.down) throw new HerdrTransportError("connect ENOENT");
+        return herd.agents;
+      },
+      listTabs: async () => herd.tabs,
+      getAgent: async (target: string) => herd.agents.find((a) => a.pane_id === target) ?? row(target, "w1:t9"),
+    });
+
+  it("never sends a machine-qualified prompt to the only local agent", async () => {
+    // One local agent; the operator addressed another machine.
+    const client = labelled({
+      agents: [row("w1:p1", "w1:t1")],
+      tabs: [{ tab_id: "w1:t1", workspace_id: "w1", number: 1, label: "local-worker" }],
+    });
+    const { runtime } = await makeRuntime(client);
+    const qualified = await runtime.handleCommand("sample.review@buildbox: run tests", { sessionKey: "s1" });
+    expect(qualified).toContain('"buildbox"');
+    const malformed = await runtime.handleCommand("x@@buildbox: run tests", { sessionKey: "s1" });
+    expect(malformed).toContain("nothing was sent");
+    expect(client.prompts).toEqual([]);
+  });
+
+  it("resolves numeric and dotted labels shown by the list", async () => {
+    const client = labelled({
+      agents: [row("w1:p1", "w1:t1"), row("w1:p2", "w1:t2")],
+      tabs: [
+        { tab_id: "w1:t1", workspace_id: "w1", number: 1, label: "7" },
+        { tab_id: "w1:t2", workspace_id: "w1", number: 2, label: "sample.review" },
+      ],
+    });
+    const { runtime } = await makeRuntime(client);
+    await runtime.handleCommand("7: run tests", { sessionKey: "s1" });
+    await runtime.handleCommand("sample.review: run tests", { sessionKey: "s1" });
+    expect(client.prompts).toEqual([
+      { target: "w1:p1", text: "run tests" },
+      { target: "w1:p2", text: "run tests" },
+    ]);
+  });
+
+  it("refuses to unwatch a label on two tabs and keeps both watches", async () => {
+    const client = labelled({
+      agents: [row("w1:p1", "w1:t1"), row("w1:p2", "w1:t2")],
+      tabs: [
+        { tab_id: "w1:t1", workspace_id: "w1", number: 1, label: "sample#reviewer" },
+        { tab_id: "w1:t2", workspace_id: "w1", number: 2, label: "sample#reviewer" },
+      ],
+    });
+    const { runtime } = await makeRuntime(client);
+    await runtime.handleCommand("watch w1:p1", { sessionKey: "s1" });
+    await runtime.handleCommand("watch w1:p2", { sessionKey: "s1" });
+    expect(await runtime.handleCommand("unwatch sample#reviewer", { sessionKey: "s1" })).toBe(
+      "sample#reviewer labels 2 tabs (w1:t1, w1:t2); use a pane id: w1:p1 (sample#reviewer), w1:p2 (sample#reviewer).",
+    );
+    expect(await runtime.handleCommand("unwatch w1:p1", { sessionKey: "s1" })).toBe("Stopped watching w1:p1.");
+    expect(await runtime.handleCommand("unwatch w1:p2", { sessionKey: "s1" })).toBe("Stopped watching w1:p2.");
+  });
+
+  it("refuses to unwatch a label whose tab runs several agents", async () => {
+    const client = labelled({
+      agents: [row("w1:p1", "w1:t1"), row("w1:p2", "w1:t1")],
+      tabs: [{ tab_id: "w1:t1", workspace_id: "w1", number: 1, label: "sample#reviewer", pane_count: 2 }],
+    });
+    const { runtime } = await makeRuntime(client);
+    await runtime.handleCommand("watch w1:p1", { sessionKey: "s1" });
+    const out = await runtime.handleCommand("unwatch sample#reviewer", { sessionKey: "s1" });
+    expect(out).toContain("matches 2 agents by tab label");
+    expect(out).toContain("w1:p1");
+    expect(out).toContain("w1:p2");
+    expect(await runtime.handleCommand("unwatch w1:p1", { sessionKey: "s1" })).toBe("Stopped watching w1:p1.");
+  });
+
+  it("still unwatches a gone pane by its id, but not by a name nobody has any more", async () => {
+    const herd = {
+      agents: [row("w1:p1", "w1:t1"), row("w1:p2", "w1:t2")],
+      tabs: [{ tab_id: "w1:t2", workspace_id: "w1", number: 2, label: "sample#builder" }],
+      down: false,
+    };
+    const { runtime } = await makeRuntime(labelled(herd));
+    await runtime.handleCommand("watch w1:p2", { sessionKey: "s1" });
+    herd.agents = [row("w1:p1", "w1:t1")];
+    expect(await runtime.handleCommand("unwatch sample#builder", { sessionKey: "s1" })).toContain(
+      "No agent matches sample#builder",
+    );
+    expect(await runtime.handleCommand("unwatch w1:p2", { sessionKey: "s1" })).toBe("Stopped watching w1:p2.");
+  });
+
+  it("unwatches a pane id while Herdr is down, and says so for anything else", async () => {
+    const herd = { agents: [row("w1:p1", "w1:t1")], tabs: [], down: false };
+    const { runtime } = await makeRuntime(labelled(herd));
+    await runtime.handleCommand("watch w1:p1", { sessionKey: "s1" });
+    herd.down = true;
+    expect(await runtime.handleCommand("unwatch claude", { sessionKey: "s1" })).toContain("Cannot reach Herdr");
+    expect(await runtime.handleCommand("unwatch w1:p1", { sessionKey: "s1" })).toBe("Stopped watching w1:p1.");
+  });
+});
+
 describe("HerdrRuntime with machines", () => {
   const FAKE_HERDR = fileURLToPath(new URL("./fixtures/fake-herdr-cli.mjs", import.meta.url));
   const FAKE_SSH = fileURLToPath(new URL("./fixtures/fake-ssh.mjs", import.meta.url));

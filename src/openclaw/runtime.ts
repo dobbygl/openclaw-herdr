@@ -18,6 +18,7 @@ import {
   type HerdrCommand,
 } from "../core/parse.js";
 import { LOCAL_SERVER_ID, ServerRegistry, shortReason, type ServerDescription } from "../core/servers.js";
+import { listLabelledAgents } from "../core/labels.js";
 import { resolveTarget } from "../core/targets.js";
 import { WatchStore, type WatchRecord } from "../core/watch-store.js";
 import { HerdrWatcher, type Notifier } from "../core/watcher.js";
@@ -147,7 +148,7 @@ export class HerdrRuntime {
   async list(): Promise<string> {
     const registry = this.#registry;
     const watches = this.#store?.list() ?? [];
-    if (!registry) return formatAgentList(await this.client.listAgents(), watches);
+    if (!registry) return formatAgentList(await listLabelledAgents(this.client), watches);
     const servers = await registry.servers();
     const groups = await Promise.all(servers.map((server) => this.#groupFor(registry, server)));
     const catalogError = registry.catalogError();
@@ -163,7 +164,13 @@ export class HerdrRuntime {
     if (!located.ok) return located.message;
     const { agent, client, server, ref } = located.target;
     const tail = await this.#safeRead(client, agent.pane_id, 12);
-    return formatStatus(agent, tail, this.#store?.byPane({ serverId: server.id, paneId: agent.pane_id }), ref);
+    return formatStatus(
+      agent,
+      tail,
+      this.#store?.byPane({ serverId: server.id, paneId: agent.pane_id }),
+      ref,
+      server.isLocal ? undefined : server.label,
+    );
   }
 
   async read(target: string, lines: number | undefined): Promise<string> {
@@ -361,12 +368,24 @@ export class HerdrRuntime {
     }
     const server = await this.#resolveServer(parsed.server);
     if (!server.ok) return server.message;
-    // The pane may be gone (that is often why the operator unwatches), so a
-    // failed lookup falls back to the selector as a literal pane id.
-    const agents = await this.#listAgentsQuietly(server.server.id);
-    const resolved = resolveTarget(agents, parsed.selector);
-    const paneId = resolved.ok ? resolved.agent.pane_id : parsed.selector;
+    // The pane may be gone (that is often why the operator unwatches), so an
+    // explicit pane id that no longer resolves is still taken literally. Any
+    // other selector must resolve to exactly one agent: an ambiguous label is
+    // refused with its candidates, never guessed at or reported as unwatched.
     const suffix = server.server.isLocal ? undefined : server.server.label;
+    const literalPane = PANE_ID.test(parsed.selector);
+    let agents: AgentInfo[];
+    try {
+      agents = await listLabelledAgents(await this.#clientFor(server.server.id));
+    } catch (error) {
+      if (!literalPane) return this.#unreachable(server.server, error);
+      agents = [];
+    }
+    const resolved = resolveTarget(agents, parsed.selector);
+    if (!resolved.ok && (resolved.reason === "ambiguous" || !literalPane)) {
+      return server.server.isLocal ? resolved.message : `On ${server.server.label}: ${resolved.message}`;
+    }
+    const paneId = resolved.ok ? resolved.agent.pane_id : parsed.selector;
     const ref = formatTargetRef(paneId, suffix);
     const paneRef = { serverId: server.server.id, paneId };
     if (!caller.sessionKey) {
@@ -438,7 +457,7 @@ export class HerdrRuntime {
     }
     let agents: AgentInfo[];
     try {
-      agents = await client.listAgents();
+      agents = await listLabelledAgents(client);
     } catch (error) {
       // Name the server that failed: "cannot reach Herdr" is wrong when the
       // Herdr that went quiet is on another machine.
@@ -503,23 +522,14 @@ export class HerdrRuntime {
     }
     try {
       const client = await this.#clientFor(server.id);
-      return { ...base, agents: await client.listAgents() };
+      return { ...base, agents: await listLabelledAgents(client) };
     } catch (error) {
-      const reason = shortMessage(error);
+      // A refusal keeps Herdr's code (`permission_denied`), so it is not read as an outage.
+      const reason = error instanceof HerdrRequestError ? `${shortMessage(error)} (${error.code})` : shortMessage(error);
       // Only a transport failure is a health verdict: Herdr answering and
       // refusing must not put the machine's other watches into backoff.
       if (!server.isLocal && error instanceof HerdrTransportError) registry.reportFailure(server.id, reason);
       return { ...base, down: reason };
-    }
-  }
-
-  /** `agent.list` for a server, or an empty herd: used where a failure is not fatal. */
-  async #listAgentsQuietly(serverId: string): Promise<AgentInfo[]> {
-    try {
-      const client = await this.#clientFor(serverId);
-      return await client.listAgents();
-    } catch {
-      return [];
     }
   }
 
@@ -546,6 +556,9 @@ export class HerdrRuntime {
     }
   }
 }
+
+/** Herdr's pane id shape (`w1:p2`): the one selector that is meaningful after its pane is gone. */
+const PANE_ID = /^[a-z][a-z0-9]*:p[0-9]+$/iu;
 
 export function describeError(error: unknown): string {
   return error instanceof Error ? error.message : String(error);

@@ -168,6 +168,61 @@ describe("parseHerdrCommand", () => {
     });
   });
 
+  describe("tab label targets", () => {
+    it("accepts a label with # on every command and on the send form", () => {
+      expect(parseHerdrCommand("status sample#reviewer")).toEqual({ kind: "status", target: "sample#reviewer" });
+      expect(parseHerdrCommand("read sample#builder@buildbox 20")).toEqual({
+        kind: "read",
+        target: "sample#builder@buildbox",
+        lines: 20,
+      });
+      expect(parseHerdrCommand("watch sample#reviewer")).toEqual({ kind: "watch", target: "sample#reviewer" });
+      expect(parseHerdrCommand("sample#reviewer: run the tests")).toEqual({
+        kind: "send",
+        target: "sample#reviewer",
+        text: "run the tests",
+      });
+      expect(parseHerdrCommand("sample#builder@buildbox: run the tests")).toEqual({
+        kind: "send",
+        target: "sample#builder@buildbox",
+        text: "run the tests",
+      });
+      expect(parseTargetRef("sample#builder@buildbox")).toEqual({ selector: "sample#builder", server: "buildbox" });
+    });
+    it("accepts every label the list can show as a name: digits, dots and non-ASCII letters", () => {
+      expect(parseHerdrCommand("status 7")).toEqual({ kind: "status", target: "7" });
+      expect(parseHerdrCommand("status sample.review")).toEqual({ kind: "status", target: "sample.review" });
+      expect(parseHerdrCommand("read revisión 20")).toEqual({ kind: "read", target: "revisión", lines: 20 });
+      expect(parseHerdrCommand("sample.review@buildbox: run tests")).toEqual({
+        kind: "send",
+        target: "sample.review@buildbox",
+        text: "run tests",
+      });
+      expect(parseHerdrCommand("7: run tests")).toEqual({ kind: "send", target: "7", text: "run tests" });
+      // A dotted head is a target now; an unknown one is refused, never sent.
+      expect(parseHerdrCommand("README.md: summarize it")).toEqual({
+        kind: "send",
+        target: "README.md",
+        text: "summarize it",
+      });
+    });
+    it("keeps prose with a spaced head as a plain prompt", () => {
+      expect(parseHerdrCommand("sample reviewer: hi")).toEqual({ kind: "send", text: "sample reviewer: hi" });
+      expect(parseHerdrCommand("see https://example.com: it fails")).toEqual({
+        kind: "send",
+        text: "see https://example.com: it fails",
+      });
+    });
+    it.each(["x@@buildbox: run tests", "a@b@c: run tests", "sample@-bad: run tests", "@buildbox: run tests"])(
+      "refuses a malformed machine-qualified head instead of sending it to the only agent (%s)",
+      (input) => {
+        const command = parseHerdrCommand(input);
+        expect(command.kind).toBe("error");
+        if (command.kind === "error") expect(command.message).toContain("nothing was sent");
+      },
+    );
+  });
+
   describe("parseTargetRef", () => {
     it("splits a bare selector with no server", () => {
       expect(parseTargetRef("claude")).toEqual({ selector: "claude" });
