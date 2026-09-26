@@ -305,6 +305,24 @@ describe("HerdrRuntime label regressions", () => {
     expect(client.prompts).toEqual([]);
   });
 
+  it.each(["revisio\u0301n", "समीक्षक"])("resolves %s rather than sending its selector as prose", async (label) => {
+    const client = labelled({
+      agents: [row("w1:p1", "w1:t1")],
+      tabs: [{ tab_id: "w1:t1", workspace_id: "w1", number: 1, label }],
+    });
+    const { runtime } = await makeRuntime(client);
+    await runtime.handleCommand(`${label}: run tests`, { sessionKey: "s1" });
+    expect(client.prompts).toEqual([{ target: "w1:p1", text: "run tests" }]);
+  });
+
+  it("never falls back to the sole agent for unknown Unicode or invalid local targets", async () => {
+    const { runtime, client } = await makeRuntime();
+    for (const target of ["revisio\u0301n", "समीक्षक", "bad/label", "x".repeat(65)]) {
+      await runtime.handleCommand(`${target}: run tests`, { sessionKey: "s1" });
+    }
+    expect(client.prompts).toEqual([]);
+  });
+
   it("resolves numeric and dotted labels shown by the list", async () => {
     const client = labelled({
       agents: [row("w1:p1", "w1:t1"), row("w1:p2", "w1:t2")],
