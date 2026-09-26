@@ -2,6 +2,8 @@
 
 ## Unreleased
 
+- Operator-assigned tab labels (from `tab.list`) name agents that have no Herdr name: `/herdr list` and `status` lead with the name and keep the pane id as the secondary ref, and a label such as `sample#reviewer` (or `sample#reviewer@buildbox`) is a target between agent name and agent kind. A label on several tabs, or a tab with several agents, is refused with the candidate pane ids. A Herdr without `tab.list` falls back to ids and names; any other `tab.list` failure is reported.
+
 - `start` waits for a brand-new pane's shell to reach its prompt and retries Herdr's `agent_pane_busy`; a machine label shared by several saved profiles is refused with their ids instead of picking the first.
 
 - `/herdr start <name> [kind] [pane id or cwd]` and the `herdr_start` tool (which also takes a timeout and native agent args): open a pane (or reuse an empty labelled one) and start an agent that is then addressable by name.

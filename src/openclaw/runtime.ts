@@ -18,6 +18,7 @@ import {
   type HerdrCommand,
 } from "../core/parse.js";
 import { LOCAL_SERVER_ID, ServerRegistry, shortReason, type ServerDescription } from "../core/servers.js";
+import { listLabelledAgents } from "../core/labels.js";
 import { resolveTarget } from "../core/targets.js";
 import { WatchStore, type WatchRecord } from "../core/watch-store.js";
 import { HerdrWatcher, type Notifier } from "../core/watcher.js";
@@ -147,7 +148,7 @@ export class HerdrRuntime {
   async list(): Promise<string> {
     const registry = this.#registry;
     const watches = this.#store?.list() ?? [];
-    if (!registry) return formatAgentList(await this.client.listAgents(), watches);
+    if (!registry) return formatAgentList(await listLabelledAgents(this.client), watches);
     const servers = await registry.servers();
     const groups = await Promise.all(servers.map((server) => this.#groupFor(registry, server)));
     const catalogError = registry.catalogError();
@@ -163,7 +164,13 @@ export class HerdrRuntime {
     if (!located.ok) return located.message;
     const { agent, client, server, ref } = located.target;
     const tail = await this.#safeRead(client, agent.pane_id, 12);
-    return formatStatus(agent, tail, this.#store?.byPane({ serverId: server.id, paneId: agent.pane_id }), ref);
+    return formatStatus(
+      agent,
+      tail,
+      this.#store?.byPane({ serverId: server.id, paneId: agent.pane_id }),
+      ref,
+      server.isLocal ? undefined : server.label,
+    );
   }
 
   async read(target: string, lines: number | undefined): Promise<string> {
@@ -438,7 +445,7 @@ export class HerdrRuntime {
     }
     let agents: AgentInfo[];
     try {
-      agents = await client.listAgents();
+      agents = await listLabelledAgents(client);
     } catch (error) {
       // Name the server that failed: "cannot reach Herdr" is wrong when the
       // Herdr that went quiet is on another machine.
@@ -503,9 +510,10 @@ export class HerdrRuntime {
     }
     try {
       const client = await this.#clientFor(server.id);
-      return { ...base, agents: await client.listAgents() };
+      return { ...base, agents: await listLabelledAgents(client) };
     } catch (error) {
-      const reason = shortMessage(error);
+      // A refusal keeps Herdr's code (`permission_denied`), so it is not read as an outage.
+      const reason = error instanceof HerdrRequestError ? `${shortMessage(error)} (${error.code})` : shortMessage(error);
       // Only a transport failure is a health verdict: Herdr answering and
       // refusing must not put the machine's other watches into backoff.
       if (!server.isLocal && error instanceof HerdrTransportError) registry.reportFailure(server.id, reason);
@@ -517,7 +525,7 @@ export class HerdrRuntime {
   async #listAgentsQuietly(serverId: string): Promise<AgentInfo[]> {
     try {
       const client = await this.#clientFor(serverId);
-      return await client.listAgents();
+      return await listLabelledAgents(client);
     } catch {
       return [];
     }

@@ -28,6 +28,11 @@ export interface FakeHerdrOptions {
   agents?: unknown[];
   /** What `agent.read` returns for every pane. Defaults to an empty composer. */
   readText?: string;
+  /**
+   * Rows `tab.list` answers with. Omitted, the fake is an older Herdr that
+   * does not know `tab.list` and answers "unknown variant", as Herdr does.
+   */
+  tabs?: unknown[];
 }
 
 /** A Herdr error response: the server answered, and said no. */
@@ -63,6 +68,10 @@ export interface FakeHerdr {
    * is up and refusing, which says nothing about the machine's health.
    */
   setListError(error: FakeHerdrError | undefined): void;
+  /** Rows `tab.list` answers with from now on; undefined makes it unknown again. */
+  setTabs(rows: unknown[] | undefined): void;
+  /** Makes `tab.list` answer with this Herdr error. */
+  setTabsError(error: FakeHerdrError | undefined): void;
   /**
    * Drops every live subscription socket while the server keeps listening:
    * what a Herdr restart (or an ssh connection that died) looks like to a
@@ -128,6 +137,8 @@ export async function startFakeHerdr(prefix = "herdr-fake-", options: FakeHerdrO
   let agents: unknown[] = [...(options.agents ?? DEFAULT_AGENTS)];
   let readText = options.readText ?? "❯ \n";
   let listError: FakeHerdrError | undefined;
+  let tabs: unknown[] | undefined = options.tabs;
+  let tabsError: FakeHerdrError | undefined;
   /** What `agent.get` reports, per pane. Mutable, so a task can "finish". */
   const panes = new Map<string, Record<string, unknown>>(
     options.agents ? seedPanes(options.agents) : DEFAULT_PANES,
@@ -158,6 +169,12 @@ export async function startFakeHerdr(prefix = "herdr-fake-", options: FakeHerdrO
         case "agent.list":
           if (listError) reply({ id: "", error: listError });
           else reply({ id: request.id, result: { type: "agent_list", agents } });
+          socket.end();
+          break;
+        case "tab.list":
+          if (tabsError) reply({ id: "", error: tabsError });
+          else if (tabs) reply({ id: request.id, result: { type: "tab_list", tabs } });
+          else reply({ id: "", error: { code: "invalid_request", message: "invalid request: unknown variant `tab.list`, expected one of `ping`" } });
           socket.end();
           break;
         case "agent.get": {
@@ -315,6 +332,12 @@ export async function startFakeHerdr(prefix = "herdr-fake-", options: FakeHerdrO
     },
     setListError(error: FakeHerdrError | undefined) {
       listError = error;
+    },
+    setTabs(rows: unknown[] | undefined) {
+      tabs = rows;
+    },
+    setTabsError(error: FakeHerdrError | undefined) {
+      tabsError = error;
     },
     emit(pane: string, status: string) {
       streams

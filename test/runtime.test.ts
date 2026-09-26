@@ -29,6 +29,7 @@ function fakeClient(overrides: Partial<Record<keyof HerdrClient, unknown>> = {})
     prompts,
     subscriptions: 0,
     listAgents: async () => agents,
+    listTabs: async () => [],
     getAgent: async (target: string) => {
       trace.push(`getAgent:${target}`);
       return agents.find((a) => a.pane_id === target);
@@ -205,6 +206,69 @@ describe("HerdrRuntime commands", () => {
  * is exactly the confusion the `@server` suffix has to prevent. No real machine
  * is contacted.
  */
+describe("HerdrRuntime with tab labels", () => {
+  // The issue's shape, with synthetic names: two single-pane tabs, agents
+  // without a Herdr name, labels only in `tab.list`.
+  const herd: AgentInfo[] = [
+    { pane_id: "w1:p1", workspace_id: "w1", tab_id: "w1:t1", terminal_id: "term_1", agent: "claude", agent_status: "idle", focused: false, revision: 1 },
+    { pane_id: "w1:p2", workspace_id: "w1", tab_id: "w1:t2", terminal_id: "term_2", agent: "codex", agent_status: "idle", focused: false, revision: 1 },
+  ];
+  const tabs = [
+    { tab_id: "w1:t1", workspace_id: "w1", number: 1, label: "sample#reviewer" },
+    { tab_id: "w1:t2", workspace_id: "w1", number: 2, label: "sample#builder" },
+  ];
+  const labelled = (listTabs: () => Promise<unknown>) =>
+    fakeClient({ listAgents: async () => herd, listTabs, getAgent: async (target: string) => herd.find((a) => a.pane_id === target) });
+
+  it("lists labels first and sends to a tab label", async () => {
+    const client = labelled(async () => tabs);
+    const { runtime } = await makeRuntime(client);
+    const list = await runtime.handleCommand("list", {});
+    expect(list).toContain("**sample#reviewer** claude · w1:p1 · idle");
+    expect(list).toContain("**sample#builder** codex · w1:p2 · idle");
+    const out = await runtime.handleCommand("sample#builder: run the tests", { sessionKey: "s1" });
+    expect(client.prompts).toEqual([{ target: "w1:p2", text: "run the tests" }]);
+    expect(out).toContain("Sent to **w1:p2** (sample#builder).");
+    expect(await runtime.handleCommand("status sample#reviewer", {})).toContain("**sample#reviewer** claude · w1:p1");
+  });
+
+  it("falls back to ids and kinds when Herdr does not know tab.list", async () => {
+    const client = labelled(async () => {
+      throw new HerdrRequestError({ code: "invalid_request", message: "invalid request: unknown variant `tab.list`" });
+    });
+    const { runtime } = await makeRuntime(client);
+    expect(await runtime.handleCommand("list", {})).toContain("**w1:p1** claude · idle");
+    const missing = await runtime.handleCommand("sample#builder: run the tests", { sessionKey: "s1" });
+    expect(missing).toContain("No agent matches sample#builder");
+    await runtime.handleCommand("codex: run the tests", { sessionKey: "s1" });
+    expect(client.prompts).toEqual([{ target: "w1:p2", text: "run the tests" }]);
+  });
+
+  it("refuses to send when tab.list is refused for another reason", async () => {
+    const client = labelled(async () => {
+      throw new HerdrRequestError({ code: "permission_denied", message: "tab.list is not allowed" });
+    });
+    const { runtime } = await makeRuntime(client);
+    const out = await runtime.handleCommand("w1:p2: run the tests", { sessionKey: "s1" });
+    expect(out).toContain("permission_denied");
+    expect(client.prompts).toEqual([]);
+    // `/herdr list` shows the refusal in place of a herd, never an unlabelled one.
+    const list = await runtime.handleCommand("list", {});
+    expect(list).toContain("tab.list is not allowed (permission_denied)");
+    expect(list).not.toContain("w1:p1");
+  });
+
+  it("reports a tab.list transport failure instead of an unlabelled herd", async () => {
+    const client = labelled(async () => {
+      throw new HerdrTransportError("Herdr socket error for tab.list: connection reset");
+    });
+    const { runtime } = await makeRuntime(client);
+    const out = await runtime.handleCommand("w1:p2: run the tests", { sessionKey: "s1" });
+    expect(out).toContain("Cannot reach Herdr");
+    expect(client.prompts).toEqual([]);
+  });
+});
+
 describe("HerdrRuntime with machines", () => {
   const FAKE_HERDR = fileURLToPath(new URL("./fixtures/fake-herdr-cli.mjs", import.meta.url));
   const FAKE_SSH = fileURLToPath(new URL("./fixtures/fake-ssh.mjs", import.meta.url));

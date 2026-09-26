@@ -1,4 +1,6 @@
 import type { AgentInfo } from "../herdr/types.js";
+import { LABEL_MAX_CHARS, preview } from "./format.js";
+import { agentDisplayName } from "./labels.js";
 
 export type TargetResolution =
   | { ok: true; agent: AgentInfo }
@@ -9,6 +11,7 @@ const LEVELS: ReadonlyArray<{ label: string; hint: string; value: (agent: AgentI
   { label: "pane id", hint: "use a terminal id", value: (agent) => agent.pane_id },
   { label: "terminal id", hint: "use a pane id", value: (agent) => agent.terminal_id },
   { label: "agent name", hint: "use a pane id", value: (agent) => agent.name ?? "" },
+  { label: "tab label", hint: "use a pane id", value: (agent) => agent.tab_label ?? "" },
   { label: "agent kind", hint: "use a pane id", value: (agent) => agent.agent ?? "" },
 ];
 
@@ -16,10 +19,13 @@ const LEVELS: ReadonlyArray<{ label: string; hint: string; value: (agent: AgentI
  * Turn a user-typed selector into exactly one live Herdr agent.
  *
  * Matching has an explicit precedence: pane id, then terminal id, then agent
- * name, then agent kind (`claude`, `codex`). The next level is only tried when
- * the current one has no match at all, so a pane id always wins over another
- * agent's name, and a name always wins over a kind. Two or more matches inside
- * one level are a refusal that lists the candidates: the plugin never guesses.
+ * name, then the operator's tab label (`sample#reviewer`, see `labels.ts`),
+ * then agent kind (`claude`, `codex`). The next level is only tried when the
+ * current one has no match at all, so a pane id always wins over another
+ * agent's name, a name over a tab label, and a tab label over a kind. Two or
+ * more matches inside one level are a refusal that lists the candidates: the
+ * plugin never guesses. A tab label is also refused when it is on more than
+ * one tab, even if only one of those tabs runs an agent.
  */
 export function resolveTarget(agents: AgentInfo[], selector?: string): TargetResolution {
   const live = agents.filter((agent) => agent.agent !== null);
@@ -52,6 +58,15 @@ export function resolveTarget(agents: AgentInfo[], selector?: string): TargetRes
       const value = level.value(agent);
       return value !== "" && value.toLowerCase() === wanted;
     });
+    const sharedTabs = matches.find((agent) => level.label === "tab label" && agent.tab_label_tab_ids)?.tab_label_tab_ids;
+    if (sharedTabs) {
+      return {
+        ok: false,
+        reason: "ambiguous",
+        message: `${selector} labels ${sharedTabs.length} tabs (${sharedTabs.join(", ")}); ${level.hint}: ${describeCandidates(matches)}.`,
+        candidates: matches,
+      };
+    }
     if (matches.length === 1) return { ok: true, agent: matches[0] as AgentInfo };
     if (matches.length > 1) {
       return {
@@ -74,7 +89,7 @@ export function resolveTarget(agents: AgentInfo[], selector?: string): TargetRes
 }
 
 export function describeCandidates(agents: AgentInfo[]): string {
-  return agents.map((agent) => `${agent.pane_id} (${agent.name ?? agent.agent ?? "?"})`).join(", ");
+  return agents.map((agent) => `${agent.pane_id} (${preview(agentDisplayName(agent) ?? agent.agent ?? "?", LABEL_MAX_CHARS)})`).join(", ");
 }
 
 /**

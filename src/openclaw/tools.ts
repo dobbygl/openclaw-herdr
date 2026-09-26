@@ -23,7 +23,7 @@ async function guarded(run: () => Promise<string>): Promise<HostToolResult> {
 
 const TargetParam = Type.String({
   description:
-    "Herdr pane id (w6:p1), agent name, or agent kind when unique (claude, codex). Add @machine for a saved Herdr machine: w6:p1@buildbox. No suffix means this host.",
+    "Herdr pane id (w6:p1), agent name, tab label (sample#reviewer), or agent kind when unique (claude, codex). Add @machine for a saved Herdr machine: w6:p1@buildbox. No suffix means this host.",
 });
 
 export function registerHerdrTools(api: HostApi, runtime: HerdrRuntime): void {
@@ -32,7 +32,7 @@ export function registerHerdrTools(api: HostApi, runtime: HerdrRuntime): void {
       name: "herdr_list",
       label: "Herdr: list agents",
       description:
-        "List the coding agents Herdr currently sees, with pane id, kind, state and working directory. Local agents first, then one group per saved Herdr machine (refs like w1:p1@buildbox); a machine that cannot be reached is shown as down.",
+        "List the coding agents Herdr currently sees, with name (Herdr agent name or operator tab label, when set), pane id, kind, state and working directory. Local agents first, then one group per saved Herdr machine (refs like w1:p1@buildbox); a machine that cannot be reached is shown as down.",
       parameters: Type.Object({}, { additionalProperties: false }),
       execute: () => guarded(() => runtime.list()),
     }),

@@ -73,7 +73,19 @@ From any OpenClaw chat surface:
 
 `start` takes the name, an optional kind (default `claude`) and either an idle shell pane id or a directory for a new pane, in any order. With neither it reuses an idle shell pane already labelled with the name, otherwise it opens a new tab in the focused workspace. The `herdr_start` tool additionally accepts a startup timeout and native agent arguments, like `herdr agent start … -- <args>`. From then on the name is the target: `/herdr cuento: write the tests`. On a remote machine it needs `remote.allowSend`, like any other input.
 
-A target is resolved in strict order: Herdr pane id (`w6:p1`), terminal id, Herdr agent name (`reviewer`), then agent kind (`claude`, `codex`). More than one match at a level is refused with the candidates listed; the plugin never guesses.
+A target is resolved in strict order: Herdr pane id (`w6:p1`), terminal id, Herdr agent name (`reviewer`), tab label (`sample#reviewer`), then agent kind (`claude`, `codex`). A level is only consulted when every earlier level matched nothing. More than one match at a level is refused with the candidates listed; the plugin never guesses.
+
+**Tab labels.** Operators often name a tab instead of the agent (`herdr tab rename w1:t1 sample#reviewer`). `agent.list` does not carry that label, so the plugin also asks Herdr's `tab.list` and joins the two by tab id — native API only, never the terminal screen, and never the terminal title (which the agent sets, usually to its current task). In `/herdr list` and `/herdr status` the operator-facing name leads and the pane id follows as the unambiguous reference:
+
+```text
+○ **sample#reviewer** claude · w1:p1 · idle
+○ **sample#builder** codex · w1:p2 · idle
+```
+
+- Name precedence for display: Herdr agent name, then tab label, then just the pane id. A tab Herdr reports with its default label (its own number) counts as unlabelled.
+- A tab label is refused as a target when its tab runs more than one agent, or when the same label (case-insensitively) is on more than one tab — even if only one of them runs an agent. The refusal lists the candidate pane ids to use instead.
+- Labels are typed as selectors, so only labels made of letters, digits, `_`, `-`, `:` and `#` that start with a letter can be used as targets; others are still shown and the pane id always works. A label cannot contain `@`, which introduces a machine.
+- A Herdr without `tab.list` (it answers "unknown variant") simply shows pane ids and names as before. Any other failure of `tab.list` — a refusal or a broken connection — is reported, not hidden behind an unlabelled list.
 
 When a watched agent settles, the originating chat gets a short message like:
 
@@ -154,7 +166,7 @@ guessing what happened while it was gone.
 Telegram / WebChat ──► OpenClaw Gateway ──(in-process)──► openclaw-herdr ──JSON lines──► herdr.sock ──► Herdr ──► Claude Code / Codex pane
 ```
 
-1. `/herdr …` is parsed into a small command; the target is resolved against a fresh `agent.list`.
+1. `/herdr …` is parsed into a small command; the target is resolved against a fresh `agent.list`, joined with `tab.list` for tab labels.
 2. Prompts go through `agent.prompt`. Herdr refuses with `agent_blocked` if the agent is at a prompt, before any input is sent.
 3. A watch record is stored and a `pane.agent_status_changed` subscription is opened for that pane.
 4. On `idle | done | blocked` the plugin confirms with `agent.get` (same occupant, `state_change_seq` advanced), reads the last lines, stores a pending delivery, queues the event as durable context in the originating session and runs one heartbeat turn there right away (`runHeartbeatOnce`), which relays the message to the session's channel. A skipped or failed turn is retried until the watch deadline.

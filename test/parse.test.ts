@@ -168,6 +168,33 @@ describe("parseHerdrCommand", () => {
     });
   });
 
+  describe("tab label targets", () => {
+    it("accepts a label with # on every command and on the send form", () => {
+      expect(parseHerdrCommand("status sample#reviewer")).toEqual({ kind: "status", target: "sample#reviewer" });
+      expect(parseHerdrCommand("read sample#builder@buildbox 20")).toEqual({
+        kind: "read",
+        target: "sample#builder@buildbox",
+        lines: 20,
+      });
+      expect(parseHerdrCommand("watch sample#reviewer")).toEqual({ kind: "watch", target: "sample#reviewer" });
+      expect(parseHerdrCommand("sample#reviewer: run the tests")).toEqual({
+        kind: "send",
+        target: "sample#reviewer",
+        text: "run the tests",
+      });
+      expect(parseHerdrCommand("sample#builder@buildbox: run the tests")).toEqual({
+        kind: "send",
+        target: "sample#builder@buildbox",
+        text: "run the tests",
+      });
+      expect(parseTargetRef("sample#builder@buildbox")).toEqual({ selector: "sample#builder", server: "buildbox" });
+    });
+    it("keeps prose with a dotted or spaced head as a plain prompt", () => {
+      expect(parseHerdrCommand("README.md: summarize it")).toEqual({ kind: "send", text: "README.md: summarize it" });
+      expect(parseHerdrCommand("sample reviewer: hi")).toEqual({ kind: "send", text: "sample reviewer: hi" });
+    });
+  });
+
   describe("parseTargetRef", () => {
     it("splits a bare selector with no server", () => {
       expect(parseTargetRef("claude")).toEqual({ selector: "claude" });
