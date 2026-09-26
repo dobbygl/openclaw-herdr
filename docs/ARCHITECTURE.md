@@ -36,6 +36,7 @@ sides speak the exact same newline-delimited JSON protocol.
 | `src/herdr/types.ts` | Hand-written types for those methods, taken from `herdr api schema --json` (protocol 22). |
 | `src/core/parse.ts` | `/herdr` grammar → `HerdrCommand`; also splits a target into `selector` and an optional `@server`. |
 | `src/core/targets.ts` | Selector → exactly one live agent (within one server's `agent.list`), or a precise refusal. |
+| `src/core/labels.ts` | Joins `agent.list` with `tab.list` so an agent carries its operator-assigned tab label; display-name precedence (agent name, then tab label). |
 | `src/core/servers.ts` | `ServerRegistry`: which Herdr servers exist (`local` plus every discovered machine), one `HerdrClient` per server, health tracking and the `remote.allowSend` gate. |
 | `src/core/watch-store.ts` | Durable JSON list of watches in the plugin state dir; each record carries a `serverId`. |
 | `src/core/watcher.ts` | Subscribes to `pane.agent_status_changed` per watched (server, pane), notifies on `idle`/`done`/`blocked`/exit/timeout, reconnects; resolves its Herdr client per watch through the registry. |
@@ -49,7 +50,7 @@ sides speak the exact same newline-delimited JSON protocol.
 ## Lifecycle of one send
 
 1. User: `/herdr w6:p1: run the tests`.
-2. `parse` → `{send, target:"w6:p1", text}`; `targets` resolves against a fresh `agent.list`.
+2. `parse` → `{send, target:"w6:p1", text}`; `targets` resolves against a fresh `agent.list` enriched with `tab.list` labels.
 3. If the agent is `blocked`, refuse and show the pane tail.
 4. Store a `WatchRecord` (`serverId`, pane, session key, deadline,
    `state_change_seq`, `terminal_id`) and open — and confirm — the

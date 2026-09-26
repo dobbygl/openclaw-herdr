@@ -143,6 +143,84 @@ describe("resolveTarget", () => {
   });
 });
 
+describe("resolveTarget with tab labels", () => {
+  // Two single-pane tabs whose agents have no Herdr name: the label is all the
+  // operator gave them.
+  const reviewer = agent({ pane_id: "w1:p1", tab_id: "w1:t1", terminal_id: "term_1", agent: "claude", tab_label: "sample#reviewer" });
+  const builder = agent({ pane_id: "w1:p2", tab_id: "w1:t2", terminal_id: "term_2", agent: "codex", tab_label: "sample#builder" });
+
+  it("resolves an unnamed agent by its tab label, case-insensitively", () => {
+    expect(resolveTarget([reviewer, builder], "sample#reviewer")).toEqual({ ok: true, agent: reviewer });
+    expect(resolveTarget([reviewer, builder], "SAMPLE#Builder")).toEqual({ ok: true, agent: builder });
+  });
+  it("keeps pane and terminal ids first", () => {
+    const labelledLikeAPane = { ...builder, tab_label: "w1:p1" };
+    expect(resolveTarget([reviewer, labelledLikeAPane], "w1:p1")).toEqual({ ok: true, agent: reviewer });
+    const labelledLikeATerminal = { ...builder, tab_label: "term_1" };
+    expect(resolveTarget([reviewer, labelledLikeATerminal], "term_1")).toEqual({ ok: true, agent: reviewer });
+  });
+  it("lets an agent name win over another agent's tab label", () => {
+    const named = { ...builder, name: "sample#reviewer" };
+    expect(resolveTarget([reviewer, named], "sample#reviewer")).toEqual({ ok: true, agent: named });
+  });
+  it("still resolves a named agent by its name when its tab is labelled too", () => {
+    const named = { ...reviewer, name: "reviewer" };
+    expect(resolveTarget([named, builder], "reviewer")).toEqual({ ok: true, agent: named });
+    expect(resolveTarget([named, builder], "sample#reviewer")).toEqual({ ok: true, agent: named });
+  });
+  it("lets a tab label win over an agent kind", () => {
+    // A tab labelled `claude` that runs codex beats the real claude agent:
+    // the label is what the operator typed on purpose.
+    const labelledClaude = { ...builder, tab_label: "claude" };
+    expect(resolveTarget([reviewer, labelledClaude], "claude")).toEqual({ ok: true, agent: labelledClaude });
+  });
+  it("falls back to the kind when no tab is labelled (no tab metadata)", () => {
+    const plain = [agent({ pane_id: "w1:p1", agent: "claude" }), agent({ pane_id: "w1:p2", terminal_id: "term_2", agent: "codex" })];
+    expect(resolveTarget(plain, "codex")).toEqual({ ok: true, agent: plain[1] });
+    const missing = resolveTarget(plain, "sample#reviewer");
+    expect(missing.ok).toBe(false);
+    if (!missing.ok) expect(missing.reason).toBe("not_found");
+  });
+  it("refuses a tab with several agents and lists their pane ids", () => {
+    const second = agent({ pane_id: "w1:p3", tab_id: "w1:t1", terminal_id: "term_3", agent: "codex", tab_label: "sample#reviewer" });
+    const result = resolveTarget([reviewer, second, builder], "sample#reviewer");
+    if (result.ok) throw new Error("expected a refusal");
+    expect(result.reason).toBe("ambiguous");
+    expect(result.candidates).toEqual([reviewer, second]);
+    expect(result.message).toBe(
+      "sample#reviewer matches 2 agents by tab label; use a pane id: w1:p1 (sample#reviewer), w1:p3 (sample#reviewer).",
+    );
+  });
+  it("refuses a label that is on several tabs, even when only one runs an agent", () => {
+    const shared = { ...reviewer, tab_label_tab_ids: ["w1:t1", "w2:t4"] };
+    const result = resolveTarget([shared, builder], "sample#reviewer");
+    if (result.ok) throw new Error("expected a refusal");
+    expect(result.reason).toBe("ambiguous");
+    expect(result.candidates).toEqual([shared]);
+    expect(result.message).toBe("sample#reviewer labels 2 tabs (w1:t1, w2:t4); use a pane id: w1:p1 (sample#reviewer).");
+  });
+  it("refuses two tabs sharing a label that both run agents", () => {
+    const twin = { ...builder, tab_label: "sample#reviewer", tab_label_tab_ids: ["w1:t1", "w1:t2"] };
+    const first = { ...reviewer, tab_label_tab_ids: ["w1:t1", "w1:t2"] };
+    const result = resolveTarget([first, twin], "sample#reviewer");
+    if (result.ok) throw new Error("expected a refusal");
+    expect(result.candidates).toEqual([first, twin]);
+    expect(result.message).toContain("w1:p1");
+    expect(result.message).toContain("w1:p2");
+  });
+  it("still refuses a machine-qualified selector here", () => {
+    const result = resolveTarget([reviewer, builder], "sample#reviewer@buildbox");
+    expect(result.ok).toBe(false);
+    if (!result.ok) expect(result.message).toContain("per machine");
+  });
+  it("names candidates by label when nothing matches, with hostile text flattened", () => {
+    const hostile = { ...builder, tab_label: "evil\nlabel" };
+    const result = resolveTarget([reviewer, hostile], "w9:p9");
+    if (result.ok) throw new Error("expected a refusal");
+    expect(result.message).toBe("No agent matches w9:p9. Running: w1:p1 (sample#reviewer), w1:p2 (evil label).");
+  });
+});
+
 describe("resolveTargetRef", () => {
   const claude = agent({ pane_id: "w6:p1", terminal_id: "term_1", agent: "claude" });
   const codex = agent({ pane_id: "w6:p2", terminal_id: "term_2", agent: "codex", name: "reviewer" });

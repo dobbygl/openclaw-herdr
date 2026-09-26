@@ -5,17 +5,19 @@
  * Any failure - including a subscription that is never acknowledged - prints
  * `FAIL: ...` and exits non-zero.
  */
+import { listLabelledAgents } from "../src/core/labels.js";
 import { HerdrClient } from "../src/herdr/client.js";
 
 async function main(): Promise<void> {
   const client = new HerdrClient();
   const pong = await client.ping();
   console.log(`herdr ${pong.version} protocol ${pong.protocol} at ${client.socketPath}`);
-  const agents = await client.listAgents();
+  // `agent.list` joined with `tab.list`; an older Herdr without tab.list just shows no labels.
+  const agents = await listLabelledAgents(client);
   console.log(`${agents.length} agent pane(s)`);
   for (const agent of agents) {
     console.log(
-      `- ${agent.pane_id} ${agent.name ?? ""} ${agent.agent ?? "no agent"} ${agent.agent_status} seq=${agent.state_change_seq ?? "?"} cwd=${agent.foreground_cwd ?? agent.cwd ?? "?"}`,
+      `- ${agent.pane_id} ${agent.name ?? ""} tab=${agent.tab_id}${agent.tab_label ? `(${agent.tab_label})` : ""} ${agent.agent ?? "no agent"} ${agent.agent_status} seq=${agent.state_change_seq ?? "?"} cwd=${agent.foreground_cwd ?? agent.cwd ?? "?"}`,
     );
   }
   const first = agents.find((agent) => agent.agent !== null);

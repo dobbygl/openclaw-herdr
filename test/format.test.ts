@@ -59,7 +59,7 @@ describe("formatAgentLine", () => {
     // Split so the assertion never depends on the ambient $HOME that
     // formatAgentLine passes to shortenPath.
     const [first, second, ...others] = line.split("\n");
-    expect(first).toBe("⚠ **w6:p1** reviewer (claude) · blocked — npm test");
+    expect(first).toBe("⚠ **reviewer** claude · w6:p1 · blocked — npm test");
     expect(second).toMatch(/^ {3}\S*build\/proj$/u);
     expect(others).toEqual([]);
   });
@@ -78,6 +78,46 @@ describe("formatAgentLine", () => {
   it("flattens newlines injected through the title", () => {
     const line = formatAgentLine(agent({ terminal_title_stripped: "evil\n**not a real line**" }));
     expect(line.split("\n")).toHaveLength(1);
+  });
+});
+
+describe("formatAgentLine with a tab label", () => {
+  it("leads with the label and keeps the pane id as the secondary ref", () => {
+    expect(formatAgentLine(agent({ tab_label: "sample#reviewer", agent_status: "idle" }))).toBe(
+      "○ **sample#reviewer** claude · w6:p1 · idle",
+    );
+  });
+  it("prefers the Herdr agent name over the tab label", () => {
+    expect(formatAgentLine(agent({ name: "reviewer", tab_label: "sample#reviewer" }))).toBe(
+      "● **reviewer** claude · w6:p1 · working",
+    );
+  });
+  it("qualifies both the name and the pane ref on a machine", () => {
+    expect(formatAgentLine(agent({ tab_label: "sample#builder" }), "w6:p1@buildbox", "buildbox")).toBe(
+      "● **sample#builder@buildbox** claude · w6:p1@buildbox · working",
+    );
+  });
+  it("keeps a hostile label on one bounded line that cannot close the bold", () => {
+    const line = formatAgentLine(agent({ tab_label: "a**b`c\nd" + "x".repeat(200) }));
+    expect(line.split("\n")).toHaveLength(1);
+    expect(line.startsWith("● **abc dxxx")).toBe(true);
+    expect(line).toContain("…** claude · w6:p1 · working");
+  });
+  it("names the label in the send receipt", () => {
+    expect(formatSendAccepted(agent({ tab_label: "sample#reviewer" }), "run the tests", "off")).toContain(
+      "Sent to **w6:p1** (sample#reviewer).",
+    );
+  });
+  it("groups a machine's labelled agents with qualified refs", () => {
+    const out = formatServerList(
+      [
+        { id: "local", label: "local", isLocal: true, agents: [agent({ tab_label: "sample#reviewer" })] },
+        { id: "m1", label: "buildbox", isLocal: false, agents: [agent({ pane_id: "w1:p2", tab_label: "sample#builder" })] },
+      ],
+      [],
+    );
+    expect(out).toContain("**sample#reviewer** claude · w6:p1 · working");
+    expect(out).toContain("**sample#builder@buildbox** claude · w1:p2@buildbox · working");
   });
 });
 

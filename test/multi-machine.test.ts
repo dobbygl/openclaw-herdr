@@ -313,12 +313,12 @@ describe("multi-machine resolution", () => {
     expect(here).not.toContain("@");
 
     const there = section(out, "Machine buildbox:");
-    expect(there).toContain("**w1:p1@buildbox** reviewer (claude) · idle — buildbox task");
-    expect(there).toContain("**w1:p3@buildbox** builder (claude) · idle");
+    expect(there).toContain("**reviewer@buildbox** claude · w1:p1@buildbox · idle — buildbox task");
+    expect(there).toContain("**builder@buildbox** claude · w1:p3@buildbox · idle");
     expect(there).not.toContain("lab task");
 
     const elsewhere = section(out, "Machine lab:");
-    expect(elsewhere).toContain("**w1:p1@lab** builder (codex) · idle — lab task");
+    expect(elsewhere).toContain("**builder@lab** codex · w1:p1@lab · idle — lab task");
     expect(elsewhere).not.toContain("buildbox task");
   });
 
@@ -330,12 +330,12 @@ describe("multi-machine resolution", () => {
     expect(here).not.toContain("buildbox");
 
     const there = await runtime.handleCommand("status w1:p1@buildbox", {});
-    expect(there).toContain("**w1:p1@buildbox** reviewer (claude)");
+    expect(there).toContain("**reviewer@buildbox** claude · w1:p1@buildbox");
     expect(there).toContain("buildbox pane output");
     expect(there).not.toContain("local pane output");
 
     const elsewhere = await runtime.handleCommand("status w1:p1@lab", {});
-    expect(elsewhere).toContain("**w1:p1@lab** builder (codex)");
+    expect(elsewhere).toContain("**builder@lab** codex · w1:p1@lab");
     expect(elsewhere).toContain("lab pane output");
 
     // `read` is scoped the same way, and answers with that machine's pane.
@@ -357,8 +357,8 @@ describe("multi-machine resolution", () => {
 
   it("resolves the same agent name on two machines separately, and never across them", async () => {
     const { runtime } = await makeRuntime();
-    expect(await runtime.handleCommand("status builder@buildbox", {})).toContain("**w1:p3@buildbox**");
-    expect(await runtime.handleCommand("status builder@lab", {})).toContain("**w1:p1@lab**");
+    expect(await runtime.handleCommand("status builder@buildbox", {})).toContain("**builder@buildbox** claude · w1:p3@buildbox");
+    expect(await runtime.handleCommand("status builder@lab", {})).toContain("**builder@lab** codex · w1:p1@lab");
 
     // Without a suffix the herd searched is this host's, only. `builder` runs
     // on both machines and on neither is it offered as a candidate here.
@@ -438,9 +438,9 @@ describe("allowSend through both surfaces", () => {
       "herdr_watch",
     ]);
     const list = await runTool(tools, "herdr_list", {});
-    expect(list).toContain("**w1:p1@buildbox**");
-    expect(list).toContain("**w1:p1@lab**");
-    expect(await runTool(tools, "herdr_status", { target: "w1:p1@lab" })).toContain("**w1:p1@lab**");
+    expect(list).toContain(" w1:p1@buildbox ");
+    expect(list).toContain(" w1:p1@lab ");
+    expect(await runTool(tools, "herdr_status", { target: "w1:p1@lab" })).toContain("**builder@lab** codex · w1:p1@lab");
     expect(await runTool(tools, "herdr_read", { target: "w1:p1@buildbox", lines: 5 })).toContain("buildbox pane output");
     expect(await runTool(tools, "herdr_watch", { target: "w1:p1@lab" })).toContain("Watching w1:p1@lab");
     expect(section(await runTool(tools, "herdr_list", {}), "Machine lab:")).toContain("watching");
@@ -553,7 +553,7 @@ describe("machine health", () => {
 
     const down = await runtime.handleCommand("list", {});
     expect(down).toMatch(/Machine buildbox: down — .*authentication failed/u);
-    expect(section(down, "Machine lab:")).toContain("**w1:p1@lab** builder (codex)");
+    expect(section(down, "Machine lab:")).toContain("**builder@lab** codex · w1:p1@lab");
     expect(down).not.toContain("Machine lab: down");
     expect(registry.health(BUILDBOX_ID)?.ok).toBe(false);
     expect(registry.health(LAB_ID)).toEqual({ ok: true });
@@ -568,7 +568,7 @@ describe("machine health", () => {
     delete process.env.FAKE_SSH_FAIL_TARGETS;
     clock += 60_000;
     const up = await runtime.handleCommand("list", {});
-    expect(section(up, "Machine buildbox:")).toContain("**w1:p1@buildbox** reviewer (claude)");
+    expect(section(up, "Machine buildbox:")).toContain("**reviewer@buildbox** claude · w1:p1@buildbox");
     expect(section(up, "Machine buildbox:")).toContain("watching");
     // A machine that went down dropped its client, so the socket path was
     // resolved again rather than a stale client being reused.
@@ -713,5 +713,59 @@ describe("test isolation", () => {
     expect(local.socketPath).not.toBe(BUILDBOX_SOCKET);
     // Every ssh the plugin spawned was our fixture: it is what wrote this file.
     expect((await fs.readFile(pidFile, "utf8")).length).toBeGreaterThan(0);
+  });
+});
+
+describe("tab labels across machines", () => {
+  // This host: w1:t1 is `sample#builder`. buildbox: w1:t1 (two agents) is
+  // `sample#reviewer`, w1:t2 is `sample#builder`. lab is an older Herdr
+  // without `tab.list`. The same label on this host and on buildbox must
+  // never be confused.
+  beforeEach(() => {
+    local.setTabs([{ tab_id: "w1:t1", workspace_id: "w1", number: 1, label: "sample#builder", pane_count: 1 }]);
+    buildbox.setTabs([
+      { tab_id: "w1:t1", workspace_id: "w1", number: 1, label: "sample#reviewer", pane_count: 2 },
+      { tab_id: "w1:t2", workspace_id: "w1", number: 2, label: "sample#builder", pane_count: 1 },
+    ]);
+  });
+
+  it("resolves the same label per machine and shows the label locally", async () => {
+    const { runtime } = await makeRuntime();
+    const list = await runtime.handleCommand("list", {});
+    expect(section(list, "Herdr agents:")).toContain("**sample#builder** claude · w1:p1 · idle");
+    // buildbox's agents have Herdr names, which win over their tab labels.
+    expect(section(list, "Machine buildbox:")).toContain("**builder@buildbox** claude · w1:p3@buildbox");
+    expect(await runtime.handleCommand("status sample#builder", {})).toContain("**sample#builder** claude · w1:p1 ·");
+    expect(await runtime.handleCommand("status sample#builder@buildbox", {})).toContain("w1:p3@buildbox");
+  });
+
+  it("refuses a label whose tab runs several agents, naming the panes", async () => {
+    const { runtime } = await makeRuntime({ allowSend: ["buildbox"] });
+    const out = await runtime.handleCommand("sample#reviewer@buildbox: run the tests", { sessionKey: "s1" });
+    expect(out).toBe(
+      "On buildbox: sample#reviewer matches 2 agents by tab label; use a pane id: w1:p1 (reviewer), w1:p2 (reviewer).",
+    );
+    expect(buildbox.prompts).toEqual([]);
+  });
+
+  it("keeps a machine read-only for label targets and sends once it is allowed", async () => {
+    const readOnly = await makeRuntime();
+    const refused = await readOnly.runtime.handleCommand("sample#builder@buildbox: run the tests", { sessionKey: "s1" });
+    expect(refused).toContain("read-only");
+    expect(buildbox.prompts).toEqual([]);
+    expect(local.prompts).toEqual([]);
+
+    const allowed = await makeRuntime({ allowSend: ["buildbox"] });
+    const sent = await allowed.runtime.handleCommand("sample#builder@buildbox: run the tests", { sessionKey: "s1" });
+    expect(sent).toContain("Sent to **w1:p3@buildbox** (builder).");
+    expect(buildbox.prompts).toEqual([{ target: "w1:p3", text: "run the tests" }]);
+    expect(local.prompts).toEqual([]);
+  });
+
+  it("falls back on a machine without tab.list", async () => {
+    const { runtime } = await makeRuntime();
+    const out = await runtime.handleCommand("status sample#builder@lab", {});
+    expect(out).toContain("On lab: No agent matches sample#builder");
+    expect(await runtime.handleCommand("status builder@lab", {})).toContain("**builder@lab** codex · w1:p1@lab");
   });
 });

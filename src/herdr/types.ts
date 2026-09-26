@@ -34,6 +34,28 @@ export interface AgentInfo {
   revision: number;
   state_change_seq?: number;
   interactive_ready?: boolean | null;
+  /**
+   * Plugin-side enrichment, never sent by Herdr: the operator-assigned label
+   * of the agent's tab, from `tab.list`. Absent when the tab has no label of
+   * its own or the server does not expose tab metadata.
+   */
+  tab_label?: string;
+  /**
+   * Plugin-side enrichment: every tab id carrying the same label
+   * (case-insensitively), set only when there is more than one. Such a label
+   * never selects a pane, whatever those tabs run.
+   */
+  tab_label_tab_ids?: string[];
+}
+
+/** One tab as `tab.list` reports it. An unlabelled tab reports its number as its label. */
+export interface TabInfo {
+  tab_id: string;
+  workspace_id: string;
+  label: string;
+  number?: number;
+  pane_count?: number;
+  focused?: boolean;
 }
 
 /** One pane as `pane.list` reports it: a shell pane has `agent: null`. */

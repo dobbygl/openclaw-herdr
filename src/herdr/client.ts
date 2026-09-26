@@ -11,6 +11,7 @@ import type {
   PaneProcessInfo,
   PaneReadResult,
   PingResult,
+  TabInfo,
   ReadSource,
   SubscriptionEvent,
   SubscriptionSpec,
@@ -337,6 +338,20 @@ export class HerdrClient {
     );
   }
 
+  /**
+   * Every tab of one workspace (or all). Malformed rows are dropped. A server
+   * without `tab.list` answers with an ordinary Herdr error, which is thrown
+   * as a {@link HerdrRequestError} like any other refusal.
+   */
+  async listTabs(workspaceId?: string): Promise<TabInfo[]> {
+    const result = await this.request<unknown>("tab.list", workspaceId ? { workspace_id: workspaceId } : {});
+    const tabs = isRecord(result) && Array.isArray(result.tabs) ? result.tabs : [];
+    return tabs.filter(
+      (tab): tab is TabInfo =>
+        isRecord(tab) && typeof tab.tab_id === "string" && typeof tab.workspace_id === "string" && typeof tab.label === "string",
+    );
+  }
+
   /** New tab (with one shell pane) in a workspace; returns the new pane. */
   async createTab(options: { workspaceId?: string; label?: string; cwd?: string; focus?: boolean }): Promise<PaneInfo> {
     const result = await this.request<unknown>("tab.create", {
@@ -516,6 +531,20 @@ function interpretResponse(parsed: unknown): ResponseOutcome {
   }
   if ("result" in parsed) return { ok: true, result: parsed.result };
   return { ok: false, error: { code: "malformed_response", message: "Herdr response had neither result nor error" } };
+}
+
+/**
+ * True when Herdr refused `method` because it does not know it: an older
+ * server answers `invalid_request` with serde's "unknown variant `<method>`".
+ * Any other refusal (permission, internal error, bad params) is a real
+ * failure and must not be read as "not supported".
+ */
+export function isUnknownMethodError(error: unknown, method: string): boolean {
+  return (
+    error instanceof HerdrRequestError &&
+    error.code === "invalid_request" &&
+    error.message.includes(`unknown variant \`${method}\``)
+  );
 }
 
 export function causeMessage(cause: unknown): string {

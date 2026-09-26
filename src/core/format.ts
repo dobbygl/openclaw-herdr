@@ -1,5 +1,6 @@
 import type { AgentInfo, AgentStatus } from "../herdr/types.js";
 import { compactPaneText, DEFAULT_MAX_CHARS, DEFAULT_MAX_LINE_CHARS } from "./compact.js";
+import { agentDisplayName } from "./labels.js";
 import { formatTargetRef } from "./parse.js";
 import { LOCAL_SERVER_ID } from "./servers.js";
 import { samePane, type SettledStatus, type WatchRecord } from "./watch-store.js";
@@ -28,15 +29,31 @@ export interface PaneBlockOptions {
 }
 
 /**
- * One agent as a chat line. `ref` is what the operator can copy back into a
- * command: the bare pane id locally, `w1:p1@buildbox` on a machine.
+ * One agent as a chat line. `ref` is the pane reference the operator can
+ * always copy back into a command: the bare pane id locally, `w1:p1@buildbox`
+ * on a machine. When the agent has an operator-facing name (its Herdr name,
+ * else its tab label) that name leads, carrying the same `@suffix`, and the
+ * pane ref follows as the unambiguous secondary reference.
  */
-export function formatAgentLine(agent: AgentInfo, ref: string = agent.pane_id): string {
-  const raw = agent.name ? `${agent.name} (${agent.agent ?? "?"})` : (agent.agent ?? "no agent");
-  const label = preview(raw, LABEL_MAX_CHARS);
+export function formatAgentLine(agent: AgentInfo, ref: string = agent.pane_id, suffix?: string): string {
+  const name = agentDisplayName(agent);
+  const kind = agent.agent ?? "no agent";
+  const head = name
+    ? `**${formatTargetRef(displayLabel(name), suffix)}** ${kind} · ${ref}`
+    : `**${ref}** ${kind}`;
   const cwd = agent.foreground_cwd ?? agent.cwd ?? "";
   const title = agent.terminal_title_stripped ? ` — ${preview(agent.terminal_title_stripped, TITLE_MAX_CHARS)}` : "";
-  return `${STATUS_ICON[agent.agent_status] ?? "?"} **${ref}** ${label} · ${agent.agent_status}${title}${cwd ? `\n   ${shortenPath(cwd)}` : ""}`;
+  return `${STATUS_ICON[agent.agent_status] ?? "?"} ${head} · ${agent.agent_status}${title}${cwd ? `\n   ${shortenPath(cwd)}` : ""}`;
+}
+
+/** Name or kind for parentheses in chat: `(sample#reviewer)`, `(claude)`. */
+export function agentLabel(agent: AgentInfo, fallback = "?"): string {
+  return displayLabel(agentDisplayName(agent) ?? agent.agent ?? fallback);
+}
+
+/** A name that came from the operator: one bounded line that cannot break the bold around it. */
+function displayLabel(name: string): string {
+  return preview(name.replace(/[*`]/gu, ""), LABEL_MAX_CHARS);
 }
 
 /** The agents of one server. Local-only; {@link formatServerList} groups several. */
@@ -106,7 +123,7 @@ function agentLines(
   return live.map((agent) => {
     const ref = formatTargetRef(agent.pane_id, suffix);
     const watched = watches.some((watch) => samePane(watch, { serverId, paneId: agent.pane_id }));
-    return formatAgentLine(agent, ref) + (watched ? "\n   watching" : "");
+    return formatAgentLine(agent, ref, suffix) + (watched ? "\n   watching" : "");
   });
 }
 
@@ -130,7 +147,7 @@ export function formatSendAccepted(
       : tracking === "off"
         ? "Not watching; use /herdr status to check."
         : "It was delivered, but I could not set up the watch, so I will not be able to tell you when it finishes; use /herdr status.";
-  return [`Sent to **${ref}** (${preview(agent.name ?? agent.agent ?? "?", LABEL_MAX_CHARS)}).`, note, `> ${preview(text)}`].join("\n");
+  return [`Sent to **${ref}** (${agentLabel(agent)}).`, note, `> ${preview(text)}`].join("\n");
 }
 
 export function formatStatus(
@@ -138,8 +155,9 @@ export function formatStatus(
   tail: string | undefined,
   watch: WatchRecord | undefined,
   ref: string = agent.pane_id,
+  suffix?: string,
 ): string {
-  const lines = [formatAgentLine(agent, ref)];
+  const lines = [formatAgentLine(agent, ref, suffix)];
   if (watch) lines.push(`watching since ${watch.createdAt}`);
   const block = tail ? trimTail(tail, 14) : "";
   if (block) lines.push("", block);

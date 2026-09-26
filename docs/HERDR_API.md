@@ -15,6 +15,7 @@ Verified live on 2026-09-20 against `~/.config/herdr/herdr.sock`.
 | --- | --- | --- |
 | `ping` | – | `{version, protocol, capabilities}`. Good liveness check. |
 | `agent.list` | – | `agents[]` with `pane_id`, `terminal_id`, `agent`, `agent_status`, `name`, `state_change_seq`, `cwd`, `foreground_cwd`, `terminal_title_stripped`. |
+| `tab.list` | `workspace_id?` | `tabs[]` with `tab_id`, `workspace_id`, `number`, `label`, `pane_count`. An unlabelled tab reports its number as `label`. The only source of operator-assigned tab labels: `agent.list` and `pane.list` do not carry them. A server without the method answers `invalid_request` with ``unknown variant `tab.list` ``. |
 | `agent.get` | `target` | Same shape for one agent. Target = pane id or live agent name. |
 | `agent.read` | `target, source, lines, format, strip_ansi` | `read.text`. Sources: `visible`, `recent`, `recent_unwrapped`, `detection`. |
 | `agent.explain` | `target` | Which detection rule produced the state, with evidence. Great for diagnostics. |

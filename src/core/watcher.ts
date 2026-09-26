@@ -1,6 +1,6 @@
 import { HerdrTransportError, type HerdrClient, type Subscription } from "../herdr/client.js";
 import type { AgentInfo, AgentStatus, SubscriptionEvent } from "../herdr/types.js";
-import { formatNotification } from "./format.js";
+import { agentLabel, formatNotification } from "./format.js";
 import { formatTargetRef } from "./parse.js";
 import { LOCAL_SERVER_ID } from "./servers.js";
 import {
@@ -181,7 +181,7 @@ export class HerdrWatcher {
       ...(input.serverId !== undefined ? { serverId: input.serverId } : {}),
       paneId: input.agent.pane_id,
       terminalId: input.agent.terminal_id,
-      agentLabel: input.agent.name ?? input.agent.agent ?? "agent",
+      agentLabel: agentLabel(input.agent, "agent"),
       sessionKey: input.sessionKey,
       ...(input.agentId ? { agentId: input.agentId } : {}),
       promptPreview: input.promptPreview,
