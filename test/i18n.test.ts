@@ -9,7 +9,9 @@ import { LANGUAGES, messages, readLanguage, type Language } from "../src/core/i1
 import { helpText, parseHerdrCommand } from "../src/core/parse.js";
 import { WatchStore, type WatchRecord } from "../src/core/watch-store.js";
 import { readPluginConfig } from "../src/openclaw/config.js";
+import type { HostApi, HostTool } from "../src/openclaw/host-api.js";
 import { describeFailure, HerdrRuntime } from "../src/openclaw/runtime.js";
+import { registerHerdrTools } from "../src/openclaw/tools.js";
 
 const EN = messages("en");
 const ES = messages("es");
@@ -347,5 +349,42 @@ describe("watch notification language across restarts", () => {
     await store.load();
     const byId = Object.fromEntries(store.list().map((watch) => [watch.id, watch.language]));
     expect(byId).toEqual({ legacy: undefined, odd: undefined, es: "es" });
+  });
+});
+
+describe("tool results in Spanish", () => {
+  async function tools(runtime: HerdrRuntime): Promise<Map<string, HostTool>> {
+    const registered = new Map<string, HostTool>();
+    const api = {
+      logger: {},
+      registerCommand: () => {},
+      registerTool: (factory: (ctx: object) => HostTool) => {
+        const tool = factory({ sessionKey: "session-a" });
+        registered.set(tool.name, tool);
+      },
+      registerService: () => {},
+    } as unknown as HostApi;
+    registerHerdrTools(api, runtime);
+    return registered;
+  }
+  const run = async (registered: Map<string, HostTool>, name: string, params: unknown) =>
+    (await registered.get(name)!.execute("call-1", params)).content.map((part) => part.text).join("\n");
+
+  it("words the tool wrapper's failures and the runtime's replies in the configured language", async () => {
+    const { runtime } = await runtimeIn(await stateDir(), "es", freshState());
+    const registered = await tools(runtime);
+    (runtime.client as unknown as { readAgent: () => Promise<never> }).readAgent = async () => {
+      throw new HerdrTransportError("connect ENOENT");
+    };
+    // `read` lets the failure escape, so this goes through the tool wrapper.
+    expect(await run(registered, "herdr_read", { target: "w1:p1" })).toBe(
+      "No puedo conectar con Herdr: connect ENOENT. ¿Está en marcha el servidor de Herdr?",
+    );
+    expect(await run(registered, "herdr_status", { target: "w9:p9" })).toBe(
+      "Ningún agente coincide con w9:p9. En marcha: w1:p1 (sample#reviewer).",
+    );
+    expect(await run(registered, "herdr_send", { target: "w1:p1", text: "run the tests", watch: false })).toContain(
+      "Enviado a **w1:p1** (sample#reviewer).",
+    );
   });
 });
