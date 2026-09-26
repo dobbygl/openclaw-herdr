@@ -5,6 +5,7 @@ import type { HostApi } from "./openclaw/host-api.js";
 import { OpenClawNotifier } from "./openclaw/notifier.js";
 import { HerdrRuntime } from "./openclaw/runtime.js";
 import { registerHerdrTools } from "./openclaw/tools.js";
+import { activeRuntime } from "./openclaw/active-runtime.js";
 
 export function registerHerdrPlugin(api: HostApi): HerdrRuntime {
   const config = readPluginConfig(api.pluginConfig);
@@ -12,11 +13,17 @@ export function registerHerdrPlugin(api: HostApi): HerdrRuntime {
   const runtime = new HerdrRuntime(config, notifier, api.logger);
   api.registerService({
     id: "herdr-watcher",
-    start: (ctx) => runtime.start(ctx.stateDir, ctx.logger),
-    stop: () => runtime.stop(),
+    start: async (ctx) => {
+      await runtime.start(ctx.stateDir, ctx.logger);
+      activeRuntime.setRuntime(runtime);
+    },
+    stop: async () => {
+      if (activeRuntime.tryGetRuntime() === runtime) activeRuntime.clearRuntime();
+      await runtime.stop();
+    },
   });
-  registerHerdrCommand(api, runtime);
-  registerHerdrTools(api, runtime);
+  registerHerdrCommand(api, runtime, () => activeRuntime.tryGetRuntime() ?? runtime);
+  registerHerdrTools(api, runtime, () => activeRuntime.tryGetRuntime() ?? runtime);
   return runtime;
 }
 

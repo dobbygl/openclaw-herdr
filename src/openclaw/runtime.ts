@@ -270,7 +270,8 @@ export class HerdrRuntime {
 
   async watch(target: string, caller: Caller): Promise<string> {
     const m = this.messages;
-    if (!caller.sessionKey || !this.#watcher) return m.watchNeedsSession;
+    if (!caller.sessionKey) return m.watchNeedsSession;
+    if (!this.#watcher) return m.watcherNotRunning;
     const located = await this.#locate(target);
     if (!located.ok) return located.message;
     const { agent, server, ref } = located.target;
